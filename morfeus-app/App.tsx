@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,6 +10,7 @@ import {
   StatusBar,
   ActivityIndicator,
   TextInput,
+  Platform,
 } from 'react-native';
 import { supabase } from './src/lib/supabase';
 import { ALL_TONES, transposeContent, transposeChord, isChordLine, CHORD_REGEX_STR } from './src/utils/chordEngine';
@@ -22,6 +23,9 @@ import {
   ArrowLeft,
   PlusCircle,
   X,
+  Play,
+  Pause,
+  RotateCcw,
 } from 'lucide-react-native';
 
 interface Song {
@@ -44,16 +48,61 @@ export default function App() {
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
   const [fontSize, setFontSize] = useState(16);
 
+  // Auto-Scroll State'leri
+  const [isScrolling, setIsScrolling] = useState(false);
+  const [scrollSpeed, setScrollSpeed] = useState(1);
+  const scrollRef = useRef<ScrollView>(null);
+  const currentScrollY = useRef(0);
+
+  const [isBeatActive, setIsBeatActive] = useState(false);
+
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newArtist, setNewArtist] = useState('');
   const [newOriginalKey, setNewOriginalKey] = useState('Am');
+  const [newBpm, setNewBpm] = useState('100');
   const [newContent, setNewContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     fetchSongs();
   }, []);
+
+  // Kesin Çalışan Web & Mobil Doğrudan DOM Scroll Motoru
+  useEffect(() => {
+    let intervalId: any = null;
+
+    if (isScrolling) {
+      intervalId = setInterval(() => {
+        const step = scrollSpeed === 1 ? 1 : scrollSpeed === 2 ? 2.5 : 5;
+        currentScrollY.current += step;
+
+        if (Platform.OS === 'web' && typeof document !== 'undefined') {
+          const domEl = document.getElementById('stage-scroll-container');
+          if (domEl) {
+            domEl.scrollTop = currentScrollY.current;
+          }
+        } else {
+          scrollRef.current?.scrollTo({ y: currentScrollY.current, animated: false });
+        }
+      }, 25);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [isScrolling, scrollSpeed]);
+
+  useEffect(() => {
+    if (!selectedSong?.bpm || selectedSong.bpm <= 0) return;
+    const intervalMs = (60 / selectedSong.bpm) * 1000;
+    const metronomeInterval = setInterval(() => {
+      setIsBeatActive(true);
+      setTimeout(() => setIsBeatActive(false), 120);
+    }, intervalMs);
+
+    return () => clearInterval(metronomeInterval);
+  }, [selectedSong]);
 
   const fetchSongs = async () => {
     try {
@@ -76,6 +125,12 @@ export default function App() {
     setSelectedSong(songItem);
     setSelectedTone(songItem.original_key);
     setTransposeValue(0);
+    setIsScrolling(false);
+    currentScrollY.current = 0;
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      const domEl = document.getElementById('stage-scroll-container');
+      if (domEl) domEl.scrollTop = 0;
+    }
   };
 
   const handleTranspose = (step: number) => {
@@ -98,6 +153,7 @@ export default function App() {
             title: newTitle.trim(),
             artist: newArtist.trim(),
             original_key: newOriginalKey,
+            bpm: parseInt(newBpm, 10) || 100,
             content: newContent,
           },
         ])
@@ -121,11 +177,9 @@ export default function App() {
     }
   };
 
-  // Hem düz akor satırlarını hem de [Am] formatını otomatik tanıyan akıllı render
   const renderFormattedContent = (content: string) => {
     const lines = content.split('\n');
     return lines.map((line, lineIdx) => {
-      // 1. Durum: Satır komple akor satırıysa (Düz yapıştırılan şarkılar)
       if (isChordLine(line)) {
         return (
           <Text key={lineIdx} style={[styles.chordOnlyLine, { fontSize, lineHeight: fontSize * 1.6 }]}>
@@ -134,7 +188,6 @@ export default function App() {
         );
       }
 
-      // 2. Durum: Satır içinde [Am] şeklinde gömülü akorlar varsa
       const parts = line.split(new RegExp(`(\\[${CHORD_REGEX_STR}\\])`, 'g'));
       return (
         <Text key={lineIdx} style={[styles.contentLine, { fontSize, lineHeight: fontSize * 1.8 }]}>
@@ -186,7 +239,20 @@ export default function App() {
                   </Text>
                   <Text style={styles.artist}>{selectedSong.artist}</Text>
                 </View>
-                <Music2 color="#818CF8" size={24} />
+
+                {selectedSong.bpm ? (
+                  <View style={styles.bpmContainer}>
+                    <View
+                      style={[
+                        styles.bpmDot,
+                        isBeatActive && styles.bpmDotActive,
+                      ]}
+                    />
+                    <Text style={styles.bpmText}>{selectedSong.bpm} BPM</Text>
+                  </View>
+                ) : (
+                  <Music2 color="#818CF8" size={24} />
+                )}
               </View>
 
               <View style={styles.controlBar}>
@@ -240,13 +306,77 @@ export default function App() {
                 </View>
               </View>
 
+              {/* SAHNE ŞARKI ALANI (DOM ID Entegreli) */}
               <ScrollView
+                ref={scrollRef}
+                nativeID="stage-scroll-container"
+                {...({ id: 'stage-scroll-container' } as any)}
                 style={styles.scrollArea}
                 contentContainerStyle={styles.scrollContent}
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator={true}
+                onScroll={(e) => {
+                  if (!isScrolling) {
+                    currentScrollY.current = e.nativeEvent.contentOffset.y;
+                  }
+                }}
+                scrollEventThrottle={16}
               >
                 {renderFormattedContent(transposeContent(selectedSong.content, transposeValue))}
               </ScrollView>
+
+              <View style={styles.floatingActionBar}>
+                <TouchableOpacity
+                  style={[styles.playBtn, isScrolling && styles.playBtnActive]}
+                  onPress={() => setIsScrolling(!isScrolling)}
+                >
+                  {isScrolling ? (
+                    <Pause color="#FFFFFF" size={18} />
+                  ) : (
+                    <Play color="#FFFFFF" size={18} fill="#FFFFFF" />
+                  )}
+                  <Text style={styles.playBtnText}>
+                    {isScrolling ? 'Durdur' : 'Kaydır'}
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.speedButtonGroup}>
+                  {[1, 2, 3].map((spd) => (
+                    <TouchableOpacity
+                      key={spd}
+                      style={[
+                        styles.speedBtn,
+                        scrollSpeed === spd && styles.speedBtnActive,
+                      ]}
+                      onPress={() => setScrollSpeed(spd)}
+                    >
+                      <Text
+                        style={[
+                          styles.speedBtnText,
+                          scrollSpeed === spd && styles.speedBtnTextActive,
+                        ]}
+                      >
+                        {spd}x
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.resetScrollBtn}
+                  onPress={() => {
+                    setIsScrolling(false);
+                    currentScrollY.current = 0;
+                    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+                      const domEl = document.getElementById('stage-scroll-container');
+                      if (domEl) domEl.scrollTop = 0;
+                    } else {
+                      scrollRef.current?.scrollTo({ y: 0, animated: true });
+                    }
+                  }}
+                >
+                  <RotateCcw color="#94A3B8" size={18} />
+                </TouchableOpacity>
+              </View>
             </>
           ) : (
             <>
@@ -334,19 +464,29 @@ export default function App() {
             />
 
             <View style={styles.formRow}>
-              <Text style={styles.formLabel}>Orijinal Ton:</Text>
+              <Text style={styles.formLabel}>Ton:</Text>
               <TextInput
-                style={[styles.formInput, { width: 80, marginBottom: 0 }]}
+                style={[styles.formInput, { width: 70, marginBottom: 0 }]}
                 value={newOriginalKey}
                 onChangeText={setNewOriginalKey}
                 placeholder="Am"
+                placeholderTextColor="#64748B"
+              />
+
+              <Text style={[styles.formLabel, { marginLeft: 16 }]}>BPM:</Text>
+              <TextInput
+                style={[styles.formInput, { width: 70, marginBottom: 0 }]}
+                value={newBpm}
+                onChangeText={setNewBpm}
+                placeholder="100"
+                keyboardType="numeric"
                 placeholderTextColor="#64748B"
               />
             </View>
 
             <TextInput
               style={[styles.formInput, styles.textArea]}
-              placeholder="Akorlu şarkı sözlerini kopyalayıp buraya doğrudan yapıştırın..."
+              placeholder="Akorlu şarkı sözlerini doğrudan buraya yapıştırın..."
               placeholderTextColor="#64748B"
               value={newContent}
               onChangeText={setNewContent}
@@ -545,6 +685,30 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginTop: 2,
   },
+  bpmContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    gap: 6,
+  },
+  bpmDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#64748B',
+  },
+  bpmDotActive: {
+    backgroundColor: '#10B981',
+    transform: [{ scale: 1.3 }],
+  },
+  bpmText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
   controlBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -620,7 +784,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 24,
-    paddingBottom: 60,
+    paddingBottom: 400,
   },
   contentLine: {
     fontFamily: 'monospace',
@@ -638,6 +802,61 @@ const styles = StyleSheet.create({
   },
   lyricsText: {
     color: '#E2E8F0',
+  },
+  floatingActionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1E293B',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+  },
+  playBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10B981',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 6,
+  },
+  playBtnActive: {
+    backgroundColor: '#EF4444',
+  },
+  playBtnText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+  speedButtonGroup: {
+    flexDirection: 'row',
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+    padding: 3,
+    gap: 4,
+  },
+  speedBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+  },
+  speedBtnActive: {
+    backgroundColor: '#4F46E5',
+  },
+  speedBtnText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  speedBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  resetScrollBtn: {
+    padding: 8,
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
   },
   modalOverlay: {
     flex: 1,
@@ -695,12 +914,12 @@ const styles = StyleSheet.create({
   formRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
     marginBottom: 12,
   },
   formLabel: {
     color: '#94A3B8',
     fontSize: 14,
+    marginRight: 8,
   },
   textArea: {
     height: 140,
