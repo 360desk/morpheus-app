@@ -27,6 +27,10 @@ import {
   RotateCcw,
   Edit3,
   Trash2,
+  ListMusic,
+  ChevronRight,
+  ChevronLeft,
+  Check,
 } from 'lucide-react-native';
 
 interface Song {
@@ -38,30 +42,42 @@ interface Song {
   bpm?: number;
 }
 
-// Orijinal web sitelerinin birebir font ailesi
+interface Setlist {
+  id: string;
+  name: string;
+  song_ids: string[];
+}
+
 const STAGE_FONT_FAMILY = Platform.select({
   web: 'Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   default: 'System',
 });
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'songs' | 'setlists'>('songs');
   const [songs, setSongs] = useState<Song[]>([]);
+  const [setlists, setSetlists] = useState<Setlist[]>([]);
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
+  const [currentSetlist, setCurrentSetlist] = useState<Setlist | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Transpoze & Font
   const [transposeValue, setTransposeValue] = useState(0);
   const [selectedTone, setSelectedTone] = useState<string>('');
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
   const [fontSize, setFontSize] = useState(15);
 
+  // Auto-Scroll
   const [isScrolling, setIsScrolling] = useState(false);
   const [scrollSpeed, setScrollSpeed] = useState(1);
   const scrollRef = useRef<ScrollView>(null);
   const currentScrollY = useRef(0);
 
+  // Metronom
   const [isBeatActive, setIsBeatActive] = useState(false);
 
+  // Şarkı Ekle / Düzenle Modal
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [editingSongId, setEditingSongId] = useState<string | null>(null);
   const [formTitle, setFormTitle] = useState('');
@@ -71,10 +87,34 @@ export default function App() {
   const [formContent, setFormContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
+  // Setlist Modal State'leri
+  const [isSetlistModalOpen, setIsSetlistModalOpen] = useState(false);
+  const [newSetlistName, setNewSetlistName] = useState('');
+  const [selectedSongIdsForSetlist, setSelectedSongIdsForSetlist] = useState<string[]>([]);
+  const [isSavingSetlist, setIsSavingSetlist] = useState(false);
+
   useEffect(() => {
-    fetchSongs();
+    fetchInitialData();
   }, []);
 
+  const fetchInitialData = async () => {
+    try {
+      setLoading(true);
+      const [songsRes, setlistsRes] = await Promise.all([
+        supabase.from('morfeus_songs').select('*').order('created_at', { ascending: false }),
+        supabase.from('morfeus_setlists').select('*').order('created_at', { ascending: false }),
+      ]);
+
+      if (songsRes.data) setSongs(songsRes.data);
+      if (setlistsRes.data) setSetlists(setlistsRes.data);
+    } catch (err) {
+      console.error('Veri yükleme hatası:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Scroll Motoru
   useEffect(() => {
     let intervalId: any = null;
 
@@ -97,6 +137,7 @@ export default function App() {
     };
   }, [isScrolling, scrollSpeed]);
 
+  // Metronom
   useEffect(() => {
     if (!selectedSong?.bpm || selectedSong.bpm <= 0) return;
     const intervalMs = (60 / selectedSong.bpm) * 1000;
@@ -108,25 +149,9 @@ export default function App() {
     return () => clearInterval(metronomeInterval);
   }, [selectedSong]);
 
-  const fetchSongs = async () => {
-    try {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from('morfeus_songs')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      if (data) setSongs(data);
-    } catch (err) {
-      console.error('Şarkılar yüklenirken hata:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSelectSong = (songItem: Song) => {
+  const handleSelectSong = (songItem: Song, setlistContext: Setlist | null = null) => {
     setSelectedSong(songItem);
+    setCurrentSetlist(setlistContext);
     setSelectedTone(songItem.original_key);
     setTransposeValue(0);
     setIsScrolling(false);
@@ -134,6 +159,22 @@ export default function App() {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const domEl = document.getElementById('stage-scroll-container');
       if (domEl) domEl.scrollTop = 0;
+    }
+  };
+
+  // Setlist Sıradaki / Önceki Şarkı Geçişi
+  const handleNavigateSetlist = (direction: 'next' | 'prev') => {
+    if (!currentSetlist || !selectedSong) return;
+    const currentIndex = currentSetlist.song_ids.indexOf(selectedSong.id);
+    if (currentIndex === -1) return;
+
+    const nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+    if (nextIndex >= 0 && nextIndex < currentSetlist.song_ids.length) {
+      const nextSongId = currentSetlist.song_ids[nextIndex];
+      const nextSong = songs.find((s) => s.id === nextSongId);
+      if (nextSong) {
+        handleSelectSong(nextSong, currentSetlist);
+      }
     }
   };
 
@@ -170,7 +211,6 @@ export default function App() {
 
     try {
       setIsSaving(true);
-
       const songPayload = {
         title: formTitle.trim(),
         artist: formArtist.trim(),
@@ -187,7 +227,6 @@ export default function App() {
           .select();
 
         if (error) throw error;
-
         if (data && data.length > 0) {
           const updatedSong = data[0];
           setSongs(songs.map((s) => (s.id === updatedSong.id ? updatedSong : s)));
@@ -204,7 +243,6 @@ export default function App() {
           .select();
 
         if (error) throw error;
-
         if (data && data.length > 0) {
           setSongs([data[0], ...songs]);
           handleSelectSong(data[0]);
@@ -225,20 +263,61 @@ export default function App() {
     if (!confirmed) return;
 
     try {
-      const { error } = await supabase
-        .from('morfeus_songs')
-        .delete()
-        .eq('id', songId);
-
+      const { error } = await supabase.from('morfeus_songs').delete().eq('id', songId);
       if (error) throw error;
-
       setSongs(songs.filter((s) => s.id !== songId));
-      if (selectedSong?.id === songId) {
-        setSelectedSong(null);
-      }
+      if (selectedSong?.id === songId) setSelectedSong(null);
     } catch (err) {
       console.error('Silme hatası:', err);
       alert('Şarkı silinirken bir hata oluştu.');
+    }
+  };
+
+  // Yeni Setlist Kaydet
+  const handleSaveSetlist = async () => {
+    if (!newSetlistName.trim() || selectedSongIdsForSetlist.length === 0) {
+      alert('Lütfen setlist adı girin ve en az 1 şarkı seçin.');
+      return;
+    }
+
+    try {
+      setIsSavingSetlist(true);
+      const { data, error } = await supabase
+        .from('morfeus_setlists')
+        .insert([
+          {
+            name: newSetlistName.trim(),
+            song_ids: selectedSongIdsForSetlist,
+          },
+        ])
+        .select();
+
+      if (error) throw error;
+      if (data && data.length > 0) {
+        setSetlists([data[0], ...setlists]);
+        setIsSetlistModalOpen(false);
+        setNewSetlistName('');
+        setSelectedSongIdsForSetlist([]);
+      }
+    } catch (err) {
+      console.error('Setlist kayıt hatası:', err);
+      alert('Setlist kaydedilemedi.');
+    } finally {
+      setIsSavingSetlist(false);
+    }
+  };
+
+  const handleDeleteSetlist = async (setlistId: string) => {
+    const confirmed = window.confirm('Bu konser setlistini silmek istediğinize emin misiniz?');
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase.from('morfeus_setlists').delete().eq('id', setlistId);
+      if (error) throw error;
+      setSetlists(setlists.filter((s) => s.id !== setlistId));
+    } catch (err) {
+      console.error('Setlist silme hatası:', err);
+      alert('Setlist silinemedi.');
     }
   };
 
@@ -303,10 +382,14 @@ export default function App() {
 
           {selectedSong ? (
             <>
+              {/* ÜST SAHNE BARI */}
               <View style={styles.header}>
                 <TouchableOpacity
                   style={styles.backBtn}
-                  onPress={() => setSelectedSong(null)}
+                  onPress={() => {
+                    setSelectedSong(null);
+                    setCurrentSetlist(null);
+                  }}
                 >
                   <ArrowLeft color="#F8FAFC" size={22} />
                 </TouchableOpacity>
@@ -314,7 +397,10 @@ export default function App() {
                   <Text style={styles.title} numberOfLines={1}>
                     {selectedSong.title}
                   </Text>
-                  <Text style={styles.artist}>{selectedSong.artist}</Text>
+                  <Text style={styles.artist}>
+                    {selectedSong.artist}
+                    {currentSetlist ? ` • [${currentSetlist.name}]` : ''}
+                  </Text>
                 </View>
 
                 <View style={styles.headerActions}>
@@ -346,6 +432,7 @@ export default function App() {
                 </View>
               </View>
 
+              {/* KONTROL BARI */}
               <View style={styles.controlBar}>
                 <TouchableOpacity
                   style={styles.toneButton}
@@ -397,6 +484,7 @@ export default function App() {
                 </View>
               </View>
 
+              {/* ŞARKI METNİ ALANI */}
               <ScrollView
                 ref={scrollRef}
                 nativeID="stage-scroll-container"
@@ -418,7 +506,18 @@ export default function App() {
                 </ScrollView>
               </ScrollView>
 
+              {/* SAHNE ALT YÜZER BARI (KAYDIRMA & SETLIST GEÇİŞ) */}
               <View style={styles.floatingActionBar}>
+                {/* Varsa Setlist Önceki Şarkı Butonu */}
+                {currentSetlist && (
+                  <TouchableOpacity
+                    style={styles.navSongBtn}
+                    onPress={() => handleNavigateSetlist('prev')}
+                  >
+                    <ChevronLeft color="#FFFFFF" size={20} />
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity
                   style={[styles.playBtn, isScrolling && styles.playBtnActive]}
                   onPress={() => setIsScrolling(!isScrolling)}
@@ -470,83 +569,186 @@ export default function App() {
                 >
                   <RotateCcw color="#94A3B8" size={18} />
                 </TouchableOpacity>
+
+                {/* Varsa Setlist Sonraki Şarkı Butonu */}
+                {currentSetlist && (
+                  <TouchableOpacity
+                    style={styles.navSongBtn}
+                    onPress={() => handleNavigateSetlist('next')}
+                  >
+                    <ChevronRight color="#FFFFFF" size={20} />
+                  </TouchableOpacity>
+                )}
               </View>
             </>
           ) : (
+            /* ANA EKRAN (SEKMELER: TÜM ŞARKILAR / SETLISTLER) */
             <>
-              <View style={styles.listHeader}>
-                <View>
-                  <Text style={styles.mainTitle}>Morfeus Repertuvar</Text>
-                  <Text style={styles.subTitle}>{songs.length} Şarkı Kayıtlı</Text>
-                </View>
+              <View style={styles.tabBar}>
                 <TouchableOpacity
-                  style={styles.addBtn}
-                  onPress={handleOpenAddModal}
+                  style={[styles.tabItem, activeTab === 'songs' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('songs')}
                 >
-                  <PlusCircle color="#FFFFFF" size={20} />
-                  <Text style={styles.addBtnText}>Şarkı Ekle</Text>
+                  <Text style={[styles.tabText, activeTab === 'songs' && styles.tabTextActive]}>
+                    Tüm Şarkılar ({songs.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.tabItem, activeTab === 'setlists' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('setlists')}
+                >
+                  <Text style={[styles.tabText, activeTab === 'setlists' && styles.tabTextActive]}>
+                    Setlistler ({setlists.length})
+                  </Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.searchBar}>
-                <Search color="#64748B" size={18} />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Şarkı veya sanatçı ara..."
-                  placeholderTextColor="#64748B"
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                />
-              </View>
-
-              {loading ? (
-                <View style={styles.center}>
-                  <ActivityIndicator size="large" color="#6366F1" />
-                </View>
-              ) : (
-                <ScrollView style={styles.listArea}>
-                  {filteredSongs.map((item) => (
+              {activeTab === 'songs' ? (
+                <>
+                  <View style={styles.listHeader}>
+                    <View>
+                      <Text style={styles.mainTitle}>Morfeus Repertuvar</Text>
+                      <Text style={styles.subTitle}>{songs.length} Şarkı Kayıtlı</Text>
+                    </View>
                     <TouchableOpacity
-                      key={item.id}
-                      style={styles.songListItem}
-                      onPress={() => handleSelectSong(item)}
+                      style={styles.addBtn}
+                      onPress={handleOpenAddModal}
                     >
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.songListTitle}>{item.title}</Text>
-                        <Text style={styles.songListArtist}>{item.artist}</Text>
-                      </View>
+                      <PlusCircle color="#FFFFFF" size={20} />
+                      <Text style={styles.addBtnText}>Şarkı Ekle</Text>
+                    </TouchableOpacity>
+                  </View>
 
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <View style={styles.keyBadge}>
-                          <Text style={styles.keyBadgeText}>{item.original_key}</Text>
+                  <View style={styles.searchBar}>
+                    <Search color="#64748B" size={18} />
+                    <TextInput
+                      style={styles.searchInput}
+                      placeholder="Şarkı veya sanatçı ara..."
+                      placeholderTextColor="#64748B"
+                      value={searchQuery}
+                      onChangeText={setSearchQuery}
+                    />
+                  </View>
+
+                  {loading ? (
+                    <View style={styles.center}>
+                      <ActivityIndicator size="large" color="#6366F1" />
+                    </View>
+                  ) : (
+                    <ScrollView style={styles.listArea}>
+                      {filteredSongs.map((item) => (
+                        <TouchableOpacity
+                          key={item.id}
+                          style={styles.songListItem}
+                          onPress={() => handleSelectSong(item)}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.songListTitle}>{item.title}</Text>
+                            <Text style={styles.songListArtist}>{item.artist}</Text>
+                          </View>
+
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View style={styles.keyBadge}>
+                              <Text style={styles.keyBadgeText}>{item.original_key}</Text>
+                            </View>
+
+                            <TouchableOpacity
+                              style={styles.listRowIconBtn}
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                handleOpenEditModal(item);
+                              }}
+                            >
+                              <Edit3 color="#94A3B8" size={16} />
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.listRowIconBtn}
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                handleDeleteSong(item.id);
+                              }}
+                            >
+                              <Trash2 color="#EF4444" size={16} />
+                            </TouchableOpacity>
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+                      {filteredSongs.length === 0 && (
+                        <Text style={styles.emptyText}>Aranan şarkı bulunamadı.</Text>
+                      )}
+                    </ScrollView>
+                  )}
+                </>
+              ) : (
+                /* SETLISTLER SEKMESİ */
+                <>
+                  <View style={styles.listHeader}>
+                    <View>
+                      <Text style={styles.mainTitle}>Konser Setlistleri</Text>
+                      <Text style={styles.subTitle}>{setlists.length} Çalma Listesi</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.addBtn}
+                      onPress={() => {
+                        setNewSetlistName('');
+                        setSelectedSongIdsForSetlist([]);
+                        setIsSetlistModalOpen(true);
+                      }}
+                    >
+                      <ListMusic color="#FFFFFF" size={20} />
+                      <Text style={styles.addBtnText}>Setlist Oluştur</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView style={styles.listArea}>
+                    {setlists.map((setlist) => (
+                      <View key={setlist.id} style={styles.setlistCard}>
+                        <View style={styles.setlistCardHeader}>
+                          <View>
+                            <Text style={styles.setlistTitle}>{setlist.name}</Text>
+                            <Text style={styles.setlistCount}>
+                              {setlist.song_ids.length} Şarkı
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={styles.listRowIconBtn}
+                            onPress={() => handleDeleteSetlist(setlist.id)}
+                          >
+                            <Trash2 color="#EF4444" size={16} />
+                          </TouchableOpacity>
                         </View>
 
-                        <TouchableOpacity
-                          style={styles.listRowIconBtn}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            handleOpenEditModal(item);
-                          }}
-                        >
-                          <Edit3 color="#94A3B8" size={16} />
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.listRowIconBtn}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            handleDeleteSong(item.id);
-                          }}
-                        >
-                          <Trash2 color="#EF4444" size={16} />
-                        </TouchableOpacity>
+                        {/* Setlist içindeki şarkılar */}
+                        <View style={styles.setlistSongList}>
+                          {setlist.song_ids.map((sId, index) => {
+                            const song = songs.find((s) => s.id === sId);
+                            if (!song) return null;
+                            return (
+                              <TouchableOpacity
+                                key={sId}
+                                style={styles.setlistSongRow}
+                                onPress={() => handleSelectSong(song, setlist)}
+                              >
+                                <Text style={styles.setlistIndex}>{index + 1}.</Text>
+                                <Text style={styles.setlistSongTitle} numberOfLines={1}>
+                                  {song.title} - {song.artist}
+                                </Text>
+                                <View style={styles.miniKeyBadge}>
+                                  <Text style={styles.miniKeyText}>{song.original_key}</Text>
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
                       </View>
-                    </TouchableOpacity>
-                  ))}
-                  {filteredSongs.length === 0 && (
-                    <Text style={styles.emptyText}>Aranan şarkı bulunamadı.</Text>
-                  )}
-                </ScrollView>
+                    ))}
+                    {setlists.length === 0 && (
+                      <Text style={styles.emptyText}>Henüz oluşturulmuş setlist yok.</Text>
+                    )}
+                  </ScrollView>
+                </>
               )}
             </>
           )}
@@ -554,6 +756,72 @@ export default function App() {
         </View>
       </View>
 
+      {/* YENİ SETLIST OLUŞTURMA MODALI */}
+      <Modal visible={isSetlistModalOpen} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.addModalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Yeni Setlist Oluştur</Text>
+              <TouchableOpacity onPress={() => setIsSetlistModalOpen(false)}>
+                <X color="#94A3B8" size={22} />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.formInput}
+              placeholder="Setlist Adı (Örn: 1. Set / Akustik Gece)"
+              placeholderTextColor="#64748B"
+              value={newSetlistName}
+              onChangeText={setNewSetlistName}
+            />
+
+            <Text style={[styles.formLabel, { marginBottom: 8, marginTop: 4 }]}>
+              Listeye Eklenecek Şarkıları Seçin:
+            </Text>
+
+            <ScrollView style={{ maxHeight: 260, marginBottom: 16 }}>
+              {songs.map((song) => {
+                const isSelected = selectedSongIdsForSetlist.includes(song.id);
+                return (
+                  <TouchableOpacity
+                    key={song.id}
+                    style={[
+                      styles.songSelectItem,
+                      isSelected && styles.songSelectItemActive,
+                    ]}
+                    onPress={() => {
+                      if (isSelected) {
+                        setSelectedSongIdsForSetlist(
+                          selectedSongIdsForSetlist.filter((id) => id !== song.id)
+                        );
+                      } else {
+                        setSelectedSongIdsForSetlist([...selectedSongIdsForSetlist, song.id]);
+                      }
+                    }}
+                  >
+                    <Text style={[styles.songSelectTitle, isSelected && { color: '#FFFFFF' }]}>
+                      {song.title} ({song.artist})
+                    </Text>
+                    {isSelected && <Check color="#38BDF8" size={18} />}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.saveBtn, isSavingSetlist && { opacity: 0.7 }]}
+              onPress={handleSaveSetlist}
+              disabled={isSavingSetlist}
+            >
+              <Text style={styles.saveBtnText}>
+                {isSavingSetlist ? 'Kaydediliyor...' : 'Setlisti Kaydet'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ŞARKI EKLE / DÜZENLE MODALI */}
       <Modal visible={isFormModalOpen} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.addModalContent}>
@@ -629,6 +897,7 @@ export default function App() {
         </View>
       </Modal>
 
+      {/* TON SEÇİCİ MODAL */}
       <Modal visible={isToneModalOpen} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -696,16 +965,42 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderColor: '#1E293B',
   },
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+    backgroundColor: '#161F30',
+  },
+  tabItem: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabItemActive: {
+    borderBottomColor: '#4F46E5',
+    backgroundColor: '#0F172A',
+  },
+  tabText: {
+    color: '#94A3B8',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  tabTextActive: {
+    color: '#F8FAFC',
+    fontWeight: 'bold',
+  },
   listHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 24,
+    paddingTop: 20,
     paddingBottom: 16,
   },
   mainTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#F8FAFC',
   },
@@ -790,6 +1085,65 @@ const styles = StyleSheet.create({
     color: '#64748B',
     textAlign: 'center',
     marginTop: 40,
+  },
+  setlistCard: {
+    backgroundColor: '#161F30',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  setlistCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+    paddingBottom: 10,
+  },
+  setlistTitle: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    color: '#F8FAFC',
+  },
+  setlistCount: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  setlistSongList: {
+    gap: 6,
+  },
+  setlistSongRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#0F172A',
+    borderRadius: 6,
+  },
+  setlistIndex: {
+    color: '#818CF8',
+    fontWeight: 'bold',
+    width: 24,
+  },
+  setlistSongTitle: {
+    flex: 1,
+    color: '#E2E8F0',
+    fontSize: 13,
+  },
+  miniKeyBadge: {
+    backgroundColor: '#1E293B',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  miniKeyText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: 'bold',
   },
   header: {
     flexDirection: 'row',
@@ -958,6 +1312,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#334155',
   },
+  navSongBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   playBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1082,6 +1444,25 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 15,
+  },
+  songSelectItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  songSelectItemActive: {
+    backgroundColor: '#312E81',
+    borderColor: '#6366F1',
+  },
+  songSelectTitle: {
+    color: '#94A3B8',
+    fontSize: 13,
   },
   tonesGrid: {
     flexDirection: 'row',
