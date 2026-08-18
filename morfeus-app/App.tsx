@@ -11,13 +11,20 @@ import {
   ActivityIndicator,
   TextInput,
   Platform,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { supabase } from './src/lib/supabase';
 import { ALL_TONES, transposeContent, transposeChord, isChordLine, CHORD_REGEX_STR } from './src/utils/chordEngine';
+import { getChordVoicings, ChordVoicing } from './src/utils/chordDiagrams';
+import { getPianoKeysForChord, PIANO_KEYS_2_OCTAVES } from './src/utils/pianoDiagrams';
+import { getBassVoicings, BassVoicing } from './src/utils/bassDiagrams';
+import { reharmonizeWithAI, MUSIC_STYLES, MusicStyle } from './src/services/aiArranger';
+import TunerModal from './src/components/TunerModal';
 import {
   Plus,
   Minus,
   ChevronDown,
+  ChevronUp,
   Search,
   ArrowLeft,
   PlusCircle,
@@ -31,6 +38,12 @@ import {
   ChevronRight,
   ChevronLeft,
   Check,
+  Sparkles,
+  Key,
+  Volume2,
+  Bookmark,
+  Music2,
+  Info,
 } from 'lucide-react-native';
 
 interface Song {
@@ -40,6 +53,9 @@ interface Song {
   original_key: string;
   content: string;
   bpm?: number;
+  capo?: string;
+  rhythm?: string;
+  notes?: string;
 }
 
 interface Setlist {
@@ -47,6 +63,8 @@ interface Setlist {
   name: string;
   song_ids: string[];
 }
+
+type InstrumentType = 'guitar' | 'piano' | 'bass';
 
 const STAGE_FONT_FAMILY = Platform.select({
   web: 'Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -62,11 +80,37 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Sahne Bilgi Kartı Görünürlüğü
+  const [isNoteCardVisible, setIsNoteCardVisible] = useState(true);
+
+  // Akort Aleti (Tuner) Modal State'i
+  const [isTunerOpen, setIsTunerOpen] = useState(false);
+
+  // Enstrüman Tercihi (Gitar, Piyano, Bas Gitar)
+  const [selectedInstrument, setSelectedInstrument] = useState<InstrumentType>('guitar');
+
   // Transpoze & Font
   const [transposeValue, setTransposeValue] = useState(0);
   const [selectedTone, setSelectedTone] = useState<string>('');
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
   const [fontSize, setFontSize] = useState(15);
+
+  // Akor Şeması Pop-up & Çoklu Pozisyon State'i
+  const [inspectedChord, setInspectedChord] = useState<string | null>(null);
+  const [chordVoicingIndex, setChordVoicingIndex] = useState<number>(0);
+
+  // AI Aranjör State'leri
+  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
+    if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+      return localStorage.getItem('morfeus_gemini_api_key') || '';
+    }
+    return '';
+  });
+  const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [isArranging, setIsArranging] = useState(false);
+  const [arrangingStatus, setArrangingStatus] = useState('');
 
   // Auto-Scroll
   const [isScrolling, setIsScrolling] = useState(false);
@@ -84,6 +128,9 @@ export default function App() {
   const [formArtist, setFormArtist] = useState('');
   const [formOriginalKey, setFormOriginalKey] = useState('Am');
   const [formBpm, setFormBpm] = useState('100');
+  const [formCapo, setFormCapo] = useState('Yok');
+  const [formRhythm, setFormRhythm] = useState('');
+  const [formNotes, setFormNotes] = useState('');
   const [formContent, setFormContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -155,6 +202,7 @@ export default function App() {
     setSelectedTone(songItem.original_key);
     setTransposeValue(0);
     setIsScrolling(false);
+    setIsNoteCardVisible(true);
     currentScrollY.current = 0;
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
       const domEl = document.getElementById('stage-scroll-container');
@@ -162,7 +210,6 @@ export default function App() {
     }
   };
 
-  // Setlist Sıradaki / Önceki Şarkı Geçişi
   const handleNavigateSetlist = (direction: 'next' | 'prev') => {
     if (!currentSetlist || !selectedSong) return;
     const currentIndex = currentSetlist.song_ids.indexOf(selectedSong.id);
@@ -189,6 +236,9 @@ export default function App() {
     setFormArtist('');
     setFormOriginalKey('Am');
     setFormBpm('100');
+    setFormCapo('Yok');
+    setFormRhythm('↓ - ↓↑ - ↑↓↑');
+    setFormNotes('');
     setFormContent('');
     setIsFormModalOpen(true);
   };
@@ -199,6 +249,9 @@ export default function App() {
     setFormArtist(songItem.artist);
     setFormOriginalKey(songItem.original_key);
     setFormBpm(songItem.bpm ? songItem.bpm.toString() : '100');
+    setFormCapo(songItem.capo || 'Yok');
+    setFormRhythm(songItem.rhythm || '');
+    setFormNotes(songItem.notes || '');
     setFormContent(songItem.content);
     setIsFormModalOpen(true);
   };
@@ -216,6 +269,9 @@ export default function App() {
         artist: formArtist.trim(),
         original_key: formOriginalKey,
         bpm: parseInt(formBpm, 10) || 100,
+        capo: formCapo.trim(),
+        rhythm: formRhythm.trim(),
+        notes: formNotes.trim(),
         content: formContent,
       };
 
@@ -273,7 +329,6 @@ export default function App() {
     }
   };
 
-  // Yeni Setlist Kaydet
   const handleSaveSetlist = async () => {
     if (!newSetlistName.trim() || selectedSongIdsForSetlist.length === 0) {
       alert('Lütfen setlist adı girin ve en az 1 şarkı seçin.');
@@ -321,10 +376,83 @@ export default function App() {
     }
   };
 
+  const handleSaveApiKey = () => {
+    if (!apiKeyInput.trim()) {
+      alert('Lütfen geçerli bir API anahtarı girin.');
+      return;
+    }
+    setGeminiApiKey(apiKeyInput.trim());
+    if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+      localStorage.setItem('morfeus_gemini_api_key', apiKeyInput.trim());
+    }
+    setIsApiKeyModalOpen(false);
+  };
+
+  const handleRunAiArranger = async (style: MusicStyle) => {
+    if (!geminiApiKey) {
+      setIsApiKeyModalOpen(true);
+      return;
+    }
+    if (!selectedSong) return;
+
+    try {
+      setIsArranging(true);
+      setArrangingStatus(`${style} armonisi hazırlanıyor...`);
+
+      const result = await reharmonizeWithAI(
+        geminiApiKey,
+        selectedSong.title,
+        selectedSong.artist,
+        selectedSong.original_key,
+        selectedSong.content,
+        style
+      );
+
+      setArrangingStatus('Yeni versiyon repertuvara kaydediliyor...');
+
+      const { data, error } = await supabase
+        .from('morfeus_songs')
+        .insert([
+          {
+            title: result.newTitle,
+            artist: selectedSong.artist,
+            original_key: result.newKey,
+            bpm: selectedSong.bpm || 100,
+            capo: selectedSong.capo || 'Yok',
+            rhythm: selectedSong.rhythm || '',
+            notes: `${selectedSong.notes || ''} [${style} AI Aranjmanı]`.trim(),
+            content: result.newContent,
+          },
+        ])
+        .select();
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const createdSong = data[0];
+        setSongs([createdSong, ...songs]);
+        setIsAiModalOpen(false);
+        handleSelectSong(createdSong);
+      }
+    } catch (err: any) {
+      console.error('AI Aranjör hatası:', err);
+      alert(`Armonizasyon sırasında hata: ${err.message || err}`);
+    } finally {
+      setIsArranging(false);
+      setArrangingStatus('');
+    }
+  };
+
+  const openChordModal = (chordName: string) => {
+    setInspectedChord(chordName);
+    setChordVoicingIndex(0);
+  };
+
   const renderFormattedContent = (content: string) => {
     const lines = content.split('\n');
     return lines.map((line, lineIdx) => {
       if (isChordLine(line)) {
+        const tokens = line.split(/(\s+)/);
         return (
           <Text
             key={lineIdx}
@@ -333,7 +461,18 @@ export default function App() {
               { fontSize, lineHeight: fontSize * 1.5 },
             ]}
           >
-            {line}
+            {tokens.map((tok, tIdx) => {
+              if (!tok.trim()) return tok;
+              return (
+                <Text
+                  key={tIdx}
+                  style={styles.clickableChord}
+                  onPress={() => openChordModal(tok.trim())}
+                >
+                  {tok}
+                </Text>
+              );
+            })}
           </Text>
         );
       }
@@ -350,9 +489,14 @@ export default function App() {
           {parts.map((part, partIdx) => {
             const isBracketChord = part.startsWith('[') && part.endsWith(']');
             if (isBracketChord) {
+              const chordName = part.slice(1, -1);
               return (
-                <Text key={partIdx} style={styles.chordText}>
-                  {part.slice(1, -1)}
+                <Text
+                  key={partIdx}
+                  style={styles.clickableChord}
+                  onPress={() => openChordModal(chordName)}
+                >
+                  {chordName}
                 </Text>
               );
             }
@@ -365,6 +509,293 @@ export default function App() {
         </Text>
       );
     });
+  };
+
+  // 6 Telli Gitar Klavyeli Şema
+  const renderGuitarDiagram = (chordName: string) => {
+    const voicings: ChordVoicing[] = getChordVoicings(chordName);
+    const strings = ['E', 'A', 'D', 'G', 'B', 'e'];
+    const fretsCount = 4;
+
+    if (!voicings || voicings.length === 0) {
+      return (
+        <View style={styles.diagramFallback}>
+          <Text style={styles.fallbackTitle}>{chordName}</Text>
+          <Text style={styles.fallbackDesc}>Bu akor için henüz gitar diyagramı eklenmedi.</Text>
+        </View>
+      );
+    }
+
+    const currentVoicing = voicings[chordVoicingIndex] || voicings[0];
+    const minFret = currentVoicing.baseFret;
+
+    return (
+      <View style={styles.diagramWrapper}>
+        <Text style={styles.diagramTitle}>{chordName}</Text>
+
+        <View style={styles.voicingNavBar}>
+          <TouchableOpacity
+            style={[styles.voicingNavBtn, chordVoicingIndex === 0 && { opacity: 0.3 }]}
+            disabled={chordVoicingIndex === 0}
+            onPress={() => setChordVoicingIndex((prev) => Math.max(0, prev - 1))}
+          >
+            <ChevronLeft color="#38BDF8" size={18} />
+          </TouchableOpacity>
+
+          <View style={{ alignItems: 'center' }}>
+            <Text style={styles.voicingCountText}>
+              Gitar Pozisyonu {chordVoicingIndex + 1} / {voicings.length}
+            </Text>
+            {currentVoicing.label && (
+              <Text style={styles.voicingLabelText}>{currentVoicing.label}</Text>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.voicingNavBtn,
+              chordVoicingIndex === voicings.length - 1 && { opacity: 0.3 },
+            ]}
+            disabled={chordVoicingIndex === voicings.length - 1}
+            onPress={() =>
+              setChordVoicingIndex((prev) => Math.min(voicings.length - 1, prev + 1))
+            }
+          >
+            <ChevronRight color="#38BDF8" size={18} />
+          </TouchableOpacity>
+        </View>
+
+        {minFret > 1 && (
+          <Text style={styles.fretIndicator}>{minFret}. Perde</Text>
+        )}
+
+        <View style={styles.nutRow}>
+          {currentVoicing.frets.map((fret, sIdx) => (
+            <View key={sIdx} style={styles.nutIndicatorBox}>
+              <Text
+                style={[
+                  styles.nutIndicatorText,
+                  fret === -1 && { color: '#EF4444' },
+                  fret === 0 && { color: '#10B981' },
+                ]}
+              >
+                {fret === -1 ? '✕' : fret === 0 ? '○' : ''}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.fretboard}>
+          {[...Array(fretsCount)].map((_, fIdx) => {
+            const currentFretNum = minFret + fIdx;
+            return (
+              <View key={fIdx} style={styles.fretRow}>
+                {[0, 1, 2, 3, 4, 5].map((sIdx) => {
+                  const fingerFret = currentVoicing.frets[sIdx];
+                  const hasDot = fingerFret === currentFretNum;
+
+                  return (
+                    <View key={sIdx} style={styles.fretStringCell}>
+                      <View style={styles.verticalStringLine} />
+                      {hasDot && <View style={styles.fingerDot} />}
+                    </View>
+                  );
+                })}
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.stringNamesRow}>
+          {strings.map((str, idx) => (
+            <Text key={idx} style={styles.stringNameText}>
+              {str}
+            </Text>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  // 4 Telli Bas Gitar Klavyeli Şema
+  const renderBassDiagram = (chordName: string) => {
+    const voicings: BassVoicing[] = getBassVoicings(chordName);
+    const strings = ['E', 'A', 'D', 'G'];
+    const fretsCount = 4;
+
+    if (!voicings || voicings.length === 0) {
+      return (
+        <View style={styles.diagramFallback}>
+          <Text style={styles.fallbackTitle}>{chordName}</Text>
+          <Text style={styles.fallbackDesc}>Bu akor için bas şeması hazırlanıyor.</Text>
+        </View>
+      );
+    }
+
+    const currentVoicing = voicings[chordVoicingIndex] || voicings[0];
+    const minFret = currentVoicing.baseFret;
+
+    return (
+      <View style={styles.diagramWrapper}>
+        <Text style={styles.diagramTitle}>{chordName}</Text>
+
+        <View style={styles.voicingNavBar}>
+          <TouchableOpacity
+            style={[styles.voicingNavBtn, chordVoicingIndex === 0 && { opacity: 0.3 }]}
+            disabled={chordVoicingIndex === 0}
+            onPress={() => setChordVoicingIndex((prev) => Math.max(0, prev - 1))}
+          >
+            <ChevronLeft color="#38BDF8" size={18} />
+          </TouchableOpacity>
+
+          <View style={{ alignItems: 'center' }}>
+            <Text style={styles.voicingCountText}>
+              Bas Pozisyonu {chordVoicingIndex + 1} / {voicings.length}
+            </Text>
+            {currentVoicing.label && (
+              <Text style={styles.voicingLabelText}>{currentVoicing.label}</Text>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.voicingNavBtn,
+              chordVoicingIndex === voicings.length - 1 && { opacity: 0.3 },
+            ]}
+            disabled={chordVoicingIndex === voicings.length - 1}
+            onPress={() =>
+              setChordVoicingIndex((prev) => Math.min(voicings.length - 1, prev + 1))
+            }
+          >
+            <ChevronRight color="#38BDF8" size={18} />
+          </TouchableOpacity>
+        </View>
+
+        {minFret > 1 && (
+          <Text style={styles.fretIndicator}>{minFret}. Perde</Text>
+        )}
+
+        <View style={[styles.nutRow, { width: 150 }]}>
+          {currentVoicing.frets.map((fret, sIdx) => (
+            <View key={sIdx} style={styles.nutIndicatorBox}>
+              <Text
+                style={[
+                  styles.nutIndicatorText,
+                  fret === -1 && { color: '#EF4444' },
+                  fret === 0 && { color: '#10B981' },
+                ]}
+              >
+                {fret === -1 ? '✕' : fret === 0 ? '○' : ''}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={[styles.fretboard, { width: 150 }]}>
+          {[...Array(fretsCount)].map((_, fIdx) => {
+            const currentFretNum = minFret + fIdx;
+            return (
+              <View key={fIdx} style={styles.fretRow}>
+                {[0, 1, 2, 3].map((sIdx) => {
+                  const toneObj = currentVoicing.chordTones.find(
+                    (t) => t.stringIdx === sIdx && t.fret === currentFretNum
+                  );
+                  const isRoot = toneObj?.isRoot;
+
+                  return (
+                    <View key={sIdx} style={styles.fretStringCell}>
+                      <View
+                        style={[
+                          styles.verticalStringLine,
+                          { width: sIdx === 0 ? 3.5 : sIdx === 1 ? 2.8 : sIdx === 2 ? 2.2 : 1.6 },
+                        ]}
+                      />
+                      {toneObj && (
+                        <View
+                          style={[
+                            styles.bassFingerDot,
+                            isRoot ? styles.bassRootDot : styles.bassToneDot,
+                          ]}
+                        >
+                          <Text style={styles.bassToneText}>{toneObj.interval}</Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={[styles.stringNamesRow, { width: 150 }]}>
+          {strings.map((str, idx) => (
+            <Text key={idx} style={styles.stringNameText}>
+              {str}
+            </Text>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  // Piyano Tuşlu Şema
+  const renderPianoDiagram = (chordName: string) => {
+    const { activeSemitones, activeNoteNames } = getPianoKeysForChord(chordName);
+    const whiteKeys = PIANO_KEYS_2_OCTAVES.filter((k) => !k.isBlack);
+
+    return (
+      <View style={styles.diagramWrapper}>
+        <Text style={styles.diagramTitle}>{chordName}</Text>
+
+        <View style={styles.pianoNotesList}>
+          <Text style={styles.pianoNotesLabel}>Basılan Notalar: </Text>
+          <Text style={styles.pianoNotesValue}>{activeNoteNames.join(' - ')}</Text>
+        </View>
+
+        <View style={styles.pianoKeyboardContainer}>
+          <View style={styles.pianoWhiteKeysRow}>
+            {whiteKeys.map((k) => {
+              const isActive = activeSemitones.includes(k.semitone);
+              return (
+                <View
+                  key={k.semitone}
+                  style={[
+                    styles.pianoWhiteKey,
+                    isActive && styles.pianoWhiteKeyActive,
+                  ]}
+                >
+                  <Text style={[styles.pianoWhiteKeyLabel, isActive && styles.pianoKeyTextActive]}>
+                    {k.note}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+
+          <View style={styles.pianoBlackKeysOverlay} pointerEvents="none">
+            {PIANO_KEYS_2_OCTAVES.map((k) => {
+              if (!k.isBlack) {
+                return <View key={k.semitone} style={styles.pianoBlackKeySpacer} />;
+              }
+
+              const isActive = activeSemitones.includes(k.semitone);
+              return (
+                <View
+                  key={k.semitone}
+                  style={[
+                    styles.pianoBlackKey,
+                    isActive && styles.pianoBlackKeyActive,
+                  ]}
+                >
+                  {isActive && <View style={styles.pianoBlackDot} />}
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+    );
   };
 
   const filteredSongs = songs.filter(
@@ -404,6 +835,14 @@ export default function App() {
                 </View>
 
                 <View style={styles.headerActions}>
+                  <TouchableOpacity
+                    style={styles.aiActionBtn}
+                    onPress={() => setIsAiModalOpen(true)}
+                  >
+                    <Sparkles color="#F59E0B" size={16} />
+                    <Text style={styles.aiActionBtnText}>AI Tarz</Text>
+                  </TouchableOpacity>
+
                   {selectedSong.bpm ? (
                     <View style={styles.bpmContainer}>
                       <View
@@ -420,31 +859,72 @@ export default function App() {
                     style={styles.iconActionBtn}
                     onPress={() => handleOpenEditModal(selectedSong)}
                   >
-                    <Edit3 color="#94A3B8" size={18} />
+                    <Edit3 color="#94A3B8" size={17} />
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={styles.iconActionBtn}
                     onPress={() => handleDeleteSong(selectedSong.id)}
                   >
-                    <Trash2 color="#EF4444" size={18} />
+                    <Trash2 color="#EF4444" size={17} />
                   </TouchableOpacity>
                 </View>
               </View>
 
-              {/* KONTROL BARI */}
+              {/* KONTROL BARI (3'LÜ ENSTRÜMAN SEÇİCİ İLE) */}
               <View style={styles.controlBar}>
-                <TouchableOpacity
-                  style={styles.toneButton}
-                  onPress={() => setIsToneModalOpen(true)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.toneLabel}>TON:</Text>
-                  <Text style={styles.toneValue}>
-                    {selectedTone || selectedSong.original_key}
-                  </Text>
-                  <ChevronDown color="#94A3B8" size={14} />
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <TouchableOpacity
+                    style={styles.toneButton}
+                    onPress={() => setIsToneModalOpen(true)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.toneLabel}>TON:</Text>
+                    <Text style={styles.toneValue}>
+                      {selectedTone || selectedSong.original_key}
+                    </Text>
+                    <ChevronDown color="#94A3B8" size={14} />
+                  </TouchableOpacity>
+
+                  {/* 3'lü Enstrüman Switcher */}
+                  <View style={styles.instrumentGroup}>
+                    <TouchableOpacity
+                      style={[
+                        styles.instrumentItemBtn,
+                        selectedInstrument === 'guitar' && styles.instrumentItemBtnActive,
+                      ]}
+                      onPress={() => setSelectedInstrument('guitar')}
+                    >
+                      <Text style={[styles.instrumentEmoji, selectedInstrument === 'guitar' && styles.instrumentEmojiActive]}>
+                        🎸 Gitar
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.instrumentItemBtn,
+                        selectedInstrument === 'piano' && styles.instrumentItemBtnActive,
+                      ]}
+                      onPress={() => setSelectedInstrument('piano')}
+                    >
+                      <Text style={[styles.instrumentEmoji, selectedInstrument === 'piano' && styles.instrumentEmojiActive]}>
+                        🎹 Piyano
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.instrumentItemBtn,
+                        selectedInstrument === 'bass' && styles.instrumentItemBtnActive,
+                      ]}
+                      onPress={() => setSelectedInstrument('bass')}
+                    >
+                      <Text style={[styles.instrumentEmoji, selectedInstrument === 'bass' && styles.instrumentEmojiActive]}>
+                        🎻 Bas
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
 
                 <View style={styles.fontSizeControls}>
                   <TouchableOpacity
@@ -484,7 +964,7 @@ export default function App() {
                 </View>
               </View>
 
-              {/* ŞARKI METNİ ALANI */}
+              {/* ŞARKI METNİ & SAHNE BİLGİ ALANI */}
               <ScrollView
                 ref={scrollRef}
                 nativeID="stage-scroll-container"
@@ -499,6 +979,54 @@ export default function App() {
                 }}
                 scrollEventThrottle={16}
               >
+                {/* SAHNE DETAY & NOT KARTI (AÇILIR/KAPANIR) */}
+                {(selectedSong.capo || selectedSong.rhythm || selectedSong.notes) && (
+                  <View style={styles.stageDashboardCard}>
+                    <TouchableOpacity
+                      style={styles.stageDashboardHeader}
+                      onPress={() => setIsNoteCardVisible(!isNoteCardVisible)}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Bookmark color="#F59E0B" size={16} />
+                        <Text style={styles.stageDashboardTitle}>Sahne Bilgi & Performans Notları</Text>
+                      </View>
+                      {isNoteCardVisible ? (
+                        <ChevronUp color="#94A3B8" size={16} />
+                      ) : (
+                        <ChevronDown color="#94A3B8" size={16} />
+                      )}
+                    </TouchableOpacity>
+
+                    {isNoteCardVisible && (
+                      <View style={styles.stageDashboardBody}>
+                        <View style={styles.stageDetailsRow}>
+                          {selectedSong.capo ? (
+                            <View style={styles.detailPill}>
+                              <Text style={styles.detailPillLabel}>KAPO:</Text>
+                              <Text style={styles.detailPillValue}>{selectedSong.capo}</Text>
+                            </View>
+                          ) : null}
+
+                          {selectedSong.rhythm ? (
+                            <View style={styles.detailPill}>
+                              <Text style={styles.detailPillLabel}>RİTİM:</Text>
+                              <Text style={styles.detailPillValue}>{selectedSong.rhythm}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        {selectedSong.notes ? (
+                          <View style={styles.noteBox}>
+                            <Info color="#38BDF8" size={14} style={{ marginTop: 2 }} />
+                            <Text style={styles.noteBoxText}>{selectedSong.notes}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {/* AKORLU ŞARKI METNİ */}
                 <ScrollView horizontal={true} showsHorizontalScrollIndicator={false}>
                   <View style={styles.lyricsWrapper}>
                     {renderFormattedContent(transposeContent(selectedSong.content, transposeValue))}
@@ -506,9 +1034,8 @@ export default function App() {
                 </ScrollView>
               </ScrollView>
 
-              {/* SAHNE ALT YÜZER BARI (KAYDIRMA & SETLIST GEÇİŞ) */}
+              {/* SAHNE ALT YÜZER BARI */}
               <View style={styles.floatingActionBar}>
-                {/* Varsa Setlist Önceki Şarkı Butonu */}
                 {currentSetlist && (
                   <TouchableOpacity
                     style={styles.navSongBtn}
@@ -570,7 +1097,6 @@ export default function App() {
                   <RotateCcw color="#94A3B8" size={18} />
                 </TouchableOpacity>
 
-                {/* Varsa Setlist Sonraki Şarkı Butonu */}
                 {currentSetlist && (
                   <TouchableOpacity
                     style={styles.navSongBtn}
@@ -582,7 +1108,7 @@ export default function App() {
               </View>
             </>
           ) : (
-            /* ANA EKRAN (SEKMELER: TÜM ŞARKILAR / SETLISTLER) */
+            /* ANA EKRAN */
             <>
               <View style={styles.tabBar}>
                 <TouchableOpacity
@@ -611,13 +1137,32 @@ export default function App() {
                       <Text style={styles.mainTitle}>Morfeus Repertuvar</Text>
                       <Text style={styles.subTitle}>{songs.length} Şarkı Kayıtlı</Text>
                     </View>
-                    <TouchableOpacity
-                      style={styles.addBtn}
-                      onPress={handleOpenAddModal}
-                    >
-                      <PlusCircle color="#FFFFFF" size={20} />
-                      <Text style={styles.addBtnText}>Şarkı Ekle</Text>
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={styles.apiKeyBtn}
+                        onPress={() => setIsTunerOpen(true)}
+                      >
+                        <Volume2 color="#38BDF8" size={16} />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.apiKeyBtn}
+                        onPress={() => {
+                          setApiKeyInput(geminiApiKey);
+                          setIsApiKeyModalOpen(true);
+                        }}
+                      >
+                        <Key color={geminiApiKey ? '#10B981' : '#F59E0B'} size={16} />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.addBtn}
+                        onPress={handleOpenAddModal}
+                      >
+                        <PlusCircle color="#FFFFFF" size={18} />
+                        <Text style={styles.addBtnText}>Şarkı Ekle</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   <View style={styles.searchBar}>
@@ -646,6 +1191,9 @@ export default function App() {
                           <View style={{ flex: 1 }}>
                             <Text style={styles.songListTitle}>{item.title}</Text>
                             <Text style={styles.songListArtist}>{item.artist}</Text>
+                            {item.capo && item.capo !== 'Yok' && (
+                              <Text style={styles.miniCapoTag}>Kapo: {item.capo}</Text>
+                            )}
                           </View>
 
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -682,7 +1230,6 @@ export default function App() {
                   )}
                 </>
               ) : (
-                /* SETLISTLER SEKMESİ */
                 <>
                   <View style={styles.listHeader}>
                     <View>
@@ -697,7 +1244,7 @@ export default function App() {
                         setIsSetlistModalOpen(true);
                       }}
                     >
-                      <ListMusic color="#FFFFFF" size={20} />
+                      <ListMusic color="#FFFFFF" size={18} />
                       <Text style={styles.addBtnText}>Setlist Oluştur</Text>
                     </TouchableOpacity>
                   </View>
@@ -720,7 +1267,6 @@ export default function App() {
                           </TouchableOpacity>
                         </View>
 
-                        {/* Setlist içindeki şarkılar */}
                         <View style={styles.setlistSongList}>
                           {setlist.song_ids.map((sId, index) => {
                             const song = songs.find((s) => s.id === sId);
@@ -756,184 +1302,413 @@ export default function App() {
         </View>
       </View>
 
-      {/* YENİ SETLIST OLUŞTURMA MODALI */}
-      <Modal visible={isSetlistModalOpen} animationType="slide" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.addModalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Yeni Setlist Oluştur</Text>
-              <TouchableOpacity onPress={() => setIsSetlistModalOpen(false)}>
-                <X color="#94A3B8" size={22} />
-              </TouchableOpacity>
-            </View>
+      {/* DİJİTAL AKORT ALETİ (TUNER) MODALI */}
+      <TunerModal visible={isTunerOpen} onClose={() => setIsTunerOpen(false)} />
 
-            <TextInput
-              style={styles.formInput}
-              placeholder="Setlist Adı (Örn: 1. Set / Akustik Gece)"
-              placeholderTextColor="#64748B"
-              value={newSetlistName}
-              onChangeText={setNewSetlistName}
-            />
-
-            <Text style={[styles.formLabel, { marginBottom: 8, marginTop: 4 }]}>
-              Listeye Eklenecek Şarkıları Seçin:
-            </Text>
-
-            <ScrollView style={{ maxHeight: 260, marginBottom: 16 }}>
-              {songs.map((song) => {
-                const isSelected = selectedSongIdsForSetlist.includes(song.id);
-                return (
-                  <TouchableOpacity
-                    key={song.id}
-                    style={[
-                      styles.songSelectItem,
-                      isSelected && styles.songSelectItemActive,
-                    ]}
-                    onPress={() => {
-                      if (isSelected) {
-                        setSelectedSongIdsForSetlist(
-                          selectedSongIdsForSetlist.filter((id) => id !== song.id)
-                        );
-                      } else {
-                        setSelectedSongIdsForSetlist([...selectedSongIdsForSetlist, song.id]);
-                      }
-                    }}
-                  >
-                    <Text style={[styles.songSelectTitle, isSelected && { color: '#FFFFFF' }]}>
-                      {song.title} ({song.artist})
-                    </Text>
-                    {isSelected && <Check color="#38BDF8" size={18} />}
+      {/* AI TARZ ARANJÖR MODALI */}
+      <Modal visible={isAiModalOpen} animationType="slide" transparent={true}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => !isArranging && setIsAiModalOpen(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.aiModalContent}>
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Sparkles color="#F59E0B" size={22} />
+                  <Text style={styles.modalTitle}>AI Akor Tarz Aranjörü</Text>
+                </View>
+                {!isArranging && (
+                  <TouchableOpacity onPress={() => setIsAiModalOpen(false)}>
+                    <X color="#94A3B8" size={22} />
                   </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+                )}
+              </View>
 
-            <TouchableOpacity
-              style={[styles.saveBtn, isSavingSetlist && { opacity: 0.7 }]}
-              onPress={handleSaveSetlist}
-              disabled={isSavingSetlist}
-            >
-              <Text style={styles.saveBtnText}>
-                {isSavingSetlist ? 'Kaydediliyor...' : 'Setlisti Kaydet'}
+              <Text style={styles.aiModalDesc}>
+                "{selectedSong?.title}" şarkısının akorlarını seçtiğin müzikal stile göre yeniden armonize et.
               </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+
+              {isArranging ? (
+                <View style={styles.arrangingLoadingBox}>
+                  <ActivityIndicator size="large" color="#F59E0B" />
+                  <Text style={styles.arrangingText}>{arrangingStatus}</Text>
+                  <Text style={styles.arrangingSubText}>Akorlar ve yürüyüşler baştan yazılıyor...</Text>
+                </View>
+              ) : (
+                <ScrollView style={{ maxHeight: 340 }}>
+                  {MUSIC_STYLES.map((style) => (
+                    <TouchableOpacity
+                      key={style.id}
+                      style={styles.styleCard}
+                      onPress={() => handleRunAiArranger(style.id)}
+                    >
+                      <Text style={styles.styleIcon}>{style.icon}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.styleName}>{style.name}</Text>
+                        <Text style={styles.styleDesc}>{style.desc}</Text>
+                      </View>
+                      <ChevronRight color="#64748B" size={18} />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
       </Modal>
 
-      {/* ŞARKI EKLE / DÜZENLE MODALI */}
-      <Modal visible={isFormModalOpen} animationType="slide" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.addModalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingSongId ? 'Şarkıyı Düzenle' : 'Yeni Şarkı Ekle'}
+      {/* GEMINI API KEY MODALI */}
+      <Modal visible={isApiKeyModalOpen} animationType="fade" transparent={true}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsApiKeyModalOpen(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.apiKeyModalContent}>
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Key color="#38BDF8" size={20} />
+                  <Text style={styles.modalTitle}>Google Gemini API Key</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsApiKeyModalOpen(false)}>
+                  <X color="#94A3B8" size={22} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.aiModalDesc}>
+                AI Aranjör özelliğini ücretsiz kullanmak için{' '}
+                <Text style={{ color: '#38BDF8', fontWeight: 'bold' }}>aistudio.google.com</Text> adresinden
+                aldığın ücretsiz API anahtarını buraya yapıştır.
               </Text>
-              <TouchableOpacity onPress={() => setIsFormModalOpen(false)}>
-                <X color="#94A3B8" size={22} />
+
+              <TextInput
+                style={styles.formInput}
+                placeholder="AQ.Ab8..."
+                placeholderTextColor="#64748B"
+                value={apiKeyInput}
+                onChangeText={setApiKeyInput}
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveApiKey}>
+                <Text style={styles.saveBtnText}>Anahtarı Kaydet</Text>
               </TouchableOpacity>
             </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
 
-            <TextInput
-              style={styles.formInput}
-              placeholder="Şarkı Adı"
-              placeholderTextColor="#64748B"
-              value={formTitle}
-              onChangeText={setFormTitle}
-            />
-
-            <TextInput
-              style={styles.formInput}
-              placeholder="Sanatçı"
-              placeholderTextColor="#64748B"
-              value={formArtist}
-              onChangeText={setFormArtist}
-            />
-
-            <View style={styles.formRow}>
-              <Text style={styles.formLabel}>Ton:</Text>
-              <TextInput
-                style={[styles.formInput, { width: 70, marginBottom: 0 }]}
-                value={formOriginalKey}
-                onChangeText={setFormOriginalKey}
-                placeholder="Am"
-                placeholderTextColor="#64748B"
-              />
-
-              <Text style={[styles.formLabel, { marginLeft: 16 }]}>BPM:</Text>
-              <TextInput
-                style={[styles.formInput, { width: 70, marginBottom: 0 }]}
-                value={formBpm}
-                onChangeText={setFormBpm}
-                placeholder="100"
-                keyboardType="numeric"
-                placeholderTextColor="#64748B"
-              />
-            </View>
-
-            <TextInput
-              style={[styles.formInput, styles.textArea]}
-              placeholder="Akorlu şarkı sözlerini doğrudan buraya yapıştırın..."
-              placeholderTextColor="#64748B"
-              value={formContent}
-              onChangeText={setFormContent}
-              multiline
-            />
-
-            <TouchableOpacity
-              style={[styles.saveBtn, isSaving && { opacity: 0.7 }]}
-              onPress={handleSaveOrUpdateSong}
-              disabled={isSaving}
+      {/* 3 ENSTRÜMANLI (GİTAR, PİYANO, BAS GİTAR) AKOR DİYAGRAM MODALI */}
+      <Modal visible={!!inspectedChord} animationType="fade" transparent={true}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setInspectedChord(null)}
+        >
+          <TouchableWithoutFeedback>
+            <View
+              style={[
+                styles.chordModalContent,
+                selectedInstrument === 'piano' && { maxWidth: 440 },
+              ]}
             >
-              <Text style={styles.saveBtnText}>
-                {isSaving
-                  ? 'Kaydediliyor...'
-                  : editingSongId
-                  ? 'Değişiklikleri Kaydet'
-                  : 'Repertuvara Kaydet'}
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.modalTitle}>
+                    {selectedInstrument === 'guitar'
+                      ? '🎸 Gitar Akoru'
+                      : selectedInstrument === 'bass'
+                      ? '🎻 Bas Gitar Akoru'
+                      : '🎹 Piyano Akoru'}
+                  </Text>
+                </View>
+
+                <View style={styles.modalInstrumentSwitchGroup}>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalInstrumentSwitchBtn,
+                      selectedInstrument === 'guitar' && styles.modalInstrumentSwitchBtnActive,
+                    ]}
+                    onPress={() => {
+                      setSelectedInstrument('guitar');
+                      setChordVoicingIndex(0);
+                    }}
+                  >
+                    <Text style={styles.modalSwitchText}>🎸</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.modalInstrumentSwitchBtn,
+                      selectedInstrument === 'piano' && styles.modalInstrumentSwitchBtnActive,
+                    ]}
+                    onPress={() => {
+                      setSelectedInstrument('piano');
+                      setChordVoicingIndex(0);
+                    }}
+                  >
+                    <Text style={styles.modalSwitchText}>🎹</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.modalInstrumentSwitchBtn,
+                      selectedInstrument === 'bass' && styles.modalInstrumentSwitchBtnActive,
+                    ]}
+                    onPress={() => {
+                      setSelectedInstrument('bass');
+                      setChordVoicingIndex(0);
+                    }}
+                  >
+                    <Text style={styles.modalSwitchText}>🎻</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity onPress={() => setInspectedChord(null)}>
+                  <X color="#94A3B8" size={22} />
+                </TouchableOpacity>
+              </View>
+
+              {inspectedChord &&
+                (selectedInstrument === 'guitar'
+                  ? renderGuitarDiagram(inspectedChord)
+                  : selectedInstrument === 'bass'
+                  ? renderBassDiagram(inspectedChord)
+                  : renderPianoDiagram(inspectedChord))}
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* YENİ SETLIST OLUŞTURMA MODALI */}
+      <Modal visible={isSetlistModalOpen} animationType="slide" transparent={true}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsSetlistModalOpen(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.addModalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Yeni Setlist Oluştur</Text>
+                <TouchableOpacity onPress={() => setIsSetlistModalOpen(false)}>
+                  <X color="#94A3B8" size={22} />
+                </TouchableOpacity>
+              </View>
+
+              <TextInput
+                style={styles.formInput}
+                placeholder="Setlist Adı (Örn: 1. Set / Akustik Gece)"
+                placeholderTextColor="#64748B"
+                value={newSetlistName}
+                onChangeText={setNewSetlistName}
+              />
+
+              <Text style={[styles.formLabel, { marginBottom: 8, marginTop: 4 }]}>
+                Listeye Eklenecek Şarkıları Seçin:
               </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+
+              <ScrollView style={{ maxHeight: 260, marginBottom: 16 }}>
+                {songs.map((song) => {
+                  const isSelected = selectedSongIdsForSetlist.includes(song.id);
+                  return (
+                    <TouchableOpacity
+                      key={song.id}
+                      style={[
+                        styles.songSelectItem,
+                        isSelected && styles.songSelectItemActive,
+                      ]}
+                      onPress={() => {
+                        if (isSelected) {
+                          setSelectedSongIdsForSetlist(
+                            selectedSongIdsForSetlist.filter((id) => id !== song.id)
+                          );
+                        } else {
+                          setSelectedSongIdsForSetlist([...selectedSongIdsForSetlist, song.id]);
+                        }
+                      }}
+                    >
+                      <Text style={[styles.songSelectTitle, isSelected && { color: '#FFFFFF' }]}>
+                        {song.title} ({song.artist})
+                      </Text>
+                      {isSelected && <Check color="#38BDF8" size={18} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <TouchableOpacity
+                style={[styles.saveBtn, isSavingSetlist && { opacity: 0.7 }]}
+                onPress={handleSaveSetlist}
+                disabled={isSavingSetlist}
+              >
+                <Text style={styles.saveBtnText}>
+                  {isSavingSetlist ? 'Kaydediliyor...' : 'Setlisti Kaydet'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ŞARKI EKLE / DÜZENLE MODALI (KAPO, RİTİM VE NOTLAR ALANLARIYLA) */}
+      <Modal visible={isFormModalOpen} animationType="slide" transparent={true}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsFormModalOpen(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.addModalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>
+                  {editingSongId ? 'Şarkıyı Düzenle' : 'Yeni Şarkı Ekle'}
+                </Text>
+                <TouchableOpacity onPress={() => setIsFormModalOpen(false)}>
+                  <X color="#94A3B8" size={22} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={{ maxHeight: 520 }}>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Şarkı Adı"
+                  placeholderTextColor="#64748B"
+                  value={formTitle}
+                  onChangeText={setFormTitle}
+                />
+
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Sanatçı"
+                  placeholderTextColor="#64748B"
+                  value={formArtist}
+                  onChangeText={setFormArtist}
+                />
+
+                {/* Ton, BPM, Kapo Satırı */}
+                <View style={styles.formRow}>
+                  <Text style={styles.formLabel}>Ton:</Text>
+                  <TextInput
+                    style={[styles.formInput, { width: 55, marginBottom: 0 }]}
+                    value={formOriginalKey}
+                    onChangeText={setFormOriginalKey}
+                    placeholder="Am"
+                    placeholderTextColor="#64748B"
+                  />
+
+                  <Text style={[styles.formLabel, { marginLeft: 10 }]}>BPM:</Text>
+                  <TextInput
+                    style={[styles.formInput, { width: 55, marginBottom: 0 }]}
+                    value={formBpm}
+                    onChangeText={setFormBpm}
+                    placeholder="100"
+                    keyboardType="numeric"
+                    placeholderTextColor="#64748B"
+                  />
+
+                  <Text style={[styles.formLabel, { marginLeft: 10 }]}>Kapo:</Text>
+                  <TextInput
+                    style={[styles.formInput, { flex: 1, marginBottom: 0 }]}
+                    value={formCapo}
+                    onChangeText={setFormCapo}
+                    placeholder="Yok / Kapo 2"
+                    placeholderTextColor="#64748B"
+                  />
+                </View>
+
+                {/* Ritim Şablonu */}
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Ritim / Arpej Şablonu (Örn: ↓ - ↓↑ - ↑↓↑ / 4/4 Pop)"
+                  placeholderTextColor="#64748B"
+                  value={formRhythm}
+                  onChangeText={setFormRhythm}
+                />
+
+                {/* Sahne / Performans Notları */}
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="Sahne / Performans Notu (Örn: İntro piyano, nakaratta solo)"
+                  placeholderTextColor="#64748B"
+                  value={formNotes}
+                  onChangeText={setFormNotes}
+                />
+
+                <TextInput
+                  style={[styles.formInput, styles.textArea]}
+                  placeholder="Akorlu şarkı sözlerini doğrudan buraya yapıştırın..."
+                  placeholderTextColor="#64748B"
+                  value={formContent}
+                  onChangeText={setFormContent}
+                  multiline
+                />
+
+                <TouchableOpacity
+                  style={[styles.saveBtn, isSaving && { opacity: 0.7 }]}
+                  onPress={handleSaveOrUpdateSong}
+                  disabled={isSaving}
+                >
+                  <Text style={styles.saveBtnText}>
+                    {isSaving
+                      ? 'Kaydediliyor...'
+                      : editingSongId
+                      ? 'Değişiklikleri Kaydet'
+                      : 'Repertuvara Kaydet'}
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
       </Modal>
 
       {/* TON SEÇİCİ MODAL */}
       <Modal visible={isToneModalOpen} animationType="fade" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Ton Seçin</Text>
-              <TouchableOpacity onPress={() => setIsToneModalOpen(false)}>
-                <Text style={styles.closeText}>Kapat</Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView contentContainerStyle={styles.tonesGrid}>
-              {ALL_TONES.map((tone) => (
-                <TouchableOpacity
-                  key={tone}
-                  style={[
-                    styles.toneGridItem,
-                    selectedTone === tone && styles.selectedToneGridItem,
-                  ]}
-                  onPress={() => {
-                    setSelectedTone(tone);
-                    setIsToneModalOpen(false);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.toneGridText,
-                      selectedTone === tone && styles.selectedToneGridText,
-                    ]}
-                  >
-                    {tone}
-                  </Text>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsToneModalOpen(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Ton Seçin</Text>
+                <TouchableOpacity onPress={() => setIsToneModalOpen(false)}>
+                  <Text style={styles.closeText}>Kapat</Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        </View>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.tonesGrid}>
+                {ALL_TONES.map((tone) => (
+                  <TouchableOpacity
+                    key={tone}
+                    style={[
+                      styles.toneGridItem,
+                      selectedTone === tone && styles.selectedToneGridItem,
+                    ]}
+                    onPress={() => {
+                      setSelectedTone(tone);
+                      setIsToneModalOpen(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.toneGridText,
+                        selectedTone === tone && styles.selectedToneGridText,
+                      ]}
+                    >
+                      {tone}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -1009,6 +1784,15 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginTop: 2,
   },
+  apiKeyBtn: {
+    backgroundColor: '#1E293B',
+    padding: 9,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1064,6 +1848,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#94A3B8',
     marginTop: 3,
+  },
+  miniCapoTag: {
+    fontSize: 11,
+    color: '#F59E0B',
+    marginTop: 2,
+    fontWeight: '600',
   },
   keyBadge: {
     backgroundColor: '#334155',
@@ -1159,6 +1949,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  aiActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#312E81',
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#6366F1',
+  },
+  aiActionBtnText: {
+    color: '#F59E0B',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
   iconActionBtn: {
     padding: 6,
     backgroundColor: '#1E293B',
@@ -1205,8 +2011,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     backgroundColor: '#161F30',
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
@@ -1216,20 +2022,45 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#1E293B',
     paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#334155',
-    gap: 6,
+    gap: 4,
   },
   toneLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#94A3B8',
     fontWeight: '600',
   },
   toneValue: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
+    color: '#38BDF8',
+  },
+  instrumentGroup: {
+    flexDirection: 'row',
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: '#334155',
+    gap: 2,
+  },
+  instrumentItemBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  instrumentItemBtnActive: {
+    backgroundColor: '#1E293B',
+  },
+  instrumentEmoji: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  instrumentEmojiActive: {
     color: '#38BDF8',
   },
   fontSizeControls: {
@@ -1239,7 +2070,7 @@ const styles = StyleSheet.create({
   smallIconBtn: {
     backgroundColor: '#1E293B',
     paddingVertical: 5,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#334155',
@@ -1247,27 +2078,27 @@ const styles = StyleSheet.create({
   fontBtnText: {
     color: '#94A3B8',
     fontWeight: 'bold',
-    fontSize: 13,
+    fontSize: 12,
   },
   transposeControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   circleBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: '#4F46E5',
     justifyContent: 'center',
     alignItems: 'center',
   },
   transposeBadge: {
-    minWidth: 26,
+    minWidth: 22,
     alignItems: 'center',
   },
   transposeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
     color: '#F8FAFC',
   },
@@ -1275,8 +2106,75 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 24,
+    padding: 20,
     paddingBottom: 400,
+  },
+  stageDashboardCard: {
+    backgroundColor: '#161F30',
+    borderRadius: 10,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#334155',
+    overflow: 'hidden',
+  },
+  stageDashboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#1E293B',
+  },
+  stageDashboardTitle: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  stageDashboardBody: {
+    padding: 12,
+    gap: 10,
+  },
+  stageDetailsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  detailPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  detailPillLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  detailPillValue: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  noteBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#0F172A',
+    padding: 10,
+    borderRadius: 6,
+    gap: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#38BDF8',
+  },
+  noteBoxText: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 12,
+    lineHeight: 17,
   },
   lyricsWrapper: {
     minWidth: '100%',
@@ -1293,11 +2191,13 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     whiteSpace: 'pre',
   } as any,
-  chordText: {
+  clickableChord: {
     color: '#F59E0B',
     fontWeight: 'bold',
-    fontFamily: STAGE_FONT_FAMILY,
-  },
+    cursor: 'pointer',
+    textDecorationLine: 'underline',
+    textDecorationColor: '#F59E0B44',
+  } as any,
   lyricsText: {
     color: '#E2E8F0',
     fontFamily: STAGE_FONT_FAMILY,
@@ -1366,7 +2266,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -1380,6 +2280,99 @@ const styles = StyleSheet.create({
     maxHeight: '70%',
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  aiModalContent: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 520,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  apiKeyModalContent: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 460,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  aiModalDesc: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  styleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    gap: 12,
+  },
+  styleIcon: {
+    fontSize: 24,
+  },
+  styleName: {
+    color: '#F8FAFC',
+    fontWeight: 'bold',
+    fontSize: 15,
+  },
+  styleDesc: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  arrangingLoadingBox: {
+    paddingVertical: 36,
+    alignItems: 'center',
+    gap: 12,
+  },
+  arrangingText: {
+    color: '#F8FAFC',
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginTop: 6,
+  },
+  arrangingSubText: {
+    color: '#94A3B8',
+    fontSize: 13,
+  },
+  chordModalContent: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+  },
+  modalInstrumentSwitchGroup: {
+    flexDirection: 'row',
+    backgroundColor: '#0F172A',
+    padding: 3,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  modalInstrumentSwitchBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  modalInstrumentSwitchBtnActive: {
+    backgroundColor: '#334155',
+  },
+  modalSwitchText: {
+    fontSize: 13,
   },
   addModalContent: {
     backgroundColor: '#1E293B',
@@ -1395,15 +2388,250 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+    width: '100%',
   },
   modalTitle: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: 'bold',
     color: '#F8FAFC',
   },
   closeText: {
     color: '#94A3B8',
     fontSize: 14,
+  },
+  diagramWrapper: {
+    alignItems: 'center',
+    width: '100%',
+    paddingVertical: 4,
+  },
+  diagramTitle: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#F59E0B',
+    marginBottom: 6,
+  },
+  voicingNavBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    backgroundColor: '#0F172A',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  voicingNavBtn: {
+    padding: 4,
+    backgroundColor: '#1E293B',
+    borderRadius: 6,
+  },
+  voicingCountText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#38BDF8',
+  },
+  voicingLabelText: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  fretIndicator: {
+    fontSize: 13,
+    color: '#38BDF8',
+    fontWeight: 'bold',
+    marginBottom: 6,
+  },
+  nutRow: {
+    flexDirection: 'row',
+    width: 180,
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  nutIndicatorBox: {
+    width: 24,
+    alignItems: 'center',
+  },
+  nutIndicatorText: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#64748B',
+  },
+  fretboard: {
+    width: 180,
+    borderTopWidth: 4,
+    borderTopColor: '#E2E8F0',
+    borderBottomWidth: 1,
+    borderBottomColor: '#475569',
+    backgroundColor: '#0F172A',
+    borderRadius: 2,
+  },
+  fretRow: {
+    flexDirection: 'row',
+    height: 40,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+  },
+  fretStringCell: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  verticalStringLine: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 1.5,
+    backgroundColor: '#64748B',
+  },
+  fingerDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#F59E0B',
+    zIndex: 2,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  bassFingerDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  bassRootDot: {
+    backgroundColor: '#38BDF8',
+  },
+  bassToneDot: {
+    backgroundColor: '#F59E0B',
+  },
+  bassToneText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#0F172A',
+  },
+  stringNamesRow: {
+    flexDirection: 'row',
+    width: 180,
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  stringNameText: {
+    width: 24,
+    textAlign: 'center',
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  pianoNotesList: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  pianoNotesLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+  pianoNotesValue: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  pianoKeyboardContainer: {
+    width: 360,
+    height: 140,
+    position: 'relative',
+    backgroundColor: '#0F172A',
+    borderWidth: 2,
+    borderColor: '#334155',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  pianoWhiteKeysRow: {
+    flexDirection: 'row',
+    width: '100%',
+    height: '100%',
+  },
+  pianoWhiteKey: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderRightWidth: 1,
+    borderRightColor: '#94A3B8',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingBottom: 8,
+  },
+  pianoWhiteKeyActive: {
+    backgroundColor: '#F59E0B',
+  },
+  pianoWhiteKeyLabel: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#334155',
+  },
+  pianoKeyTextActive: {
+    color: '#FFFFFF',
+  },
+  pianoBlackKeysOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 85,
+    flexDirection: 'row',
+  },
+  pianoBlackKey: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+    marginHorizontal: 1.5,
+    borderBottomLeftRadius: 3,
+    borderBottomRightRadius: 3,
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingBottom: 6,
+    zIndex: 10,
+  },
+  pianoBlackKeyActive: {
+    backgroundColor: '#F59E0B',
+    borderColor: '#FCD34D',
+  },
+  pianoBlackKeySpacer: {
+    flex: 1,
+  },
+  pianoBlackDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFFFFF',
+  },
+  diagramFallback: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  fallbackTitle: {
+    fontSize: 22,
+    color: '#F8FAFC',
+    fontWeight: 'bold',
+  },
+  fallbackDesc: {
+    color: '#94A3B8',
+    marginTop: 8,
+    textAlign: 'center',
   },
   formInput: {
     backgroundColor: '#0F172A',
@@ -1424,11 +2652,11 @@ const styles = StyleSheet.create({
   },
   formLabel: {
     color: '#94A3B8',
-    fontSize: 14,
-    marginRight: 8,
+    fontSize: 13,
+    marginRight: 6,
   },
   textArea: {
-    height: 180,
+    height: 160,
     textAlignVertical: 'top',
     fontFamily: STAGE_FONT_FAMILY,
     whiteSpace: 'pre',
@@ -1439,6 +2667,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     marginTop: 6,
+    marginBottom: 16,
   },
   saveBtnText: {
     color: '#FFFFFF',
