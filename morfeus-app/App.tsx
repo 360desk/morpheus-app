@@ -17,7 +17,6 @@ import { ALL_TONES, transposeContent, transposeChord, isChordLine, CHORD_REGEX_S
 import {
   Plus,
   Minus,
-  Music2,
   ChevronDown,
   Search,
   ArrowLeft,
@@ -26,6 +25,8 @@ import {
   Play,
   Pause,
   RotateCcw,
+  Edit3,
+  Trash2,
 } from 'lucide-react-native';
 
 interface Song {
@@ -37,6 +38,12 @@ interface Song {
   bpm?: number;
 }
 
+// Orijinal web sitelerinin birebir font ailesi
+const STAGE_FONT_FAMILY = Platform.select({
+  web: 'Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  default: 'System',
+});
+
 export default function App() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
@@ -46,9 +53,8 @@ export default function App() {
   const [transposeValue, setTransposeValue] = useState(0);
   const [selectedTone, setSelectedTone] = useState<string>('');
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
-  const [fontSize, setFontSize] = useState(16);
+  const [fontSize, setFontSize] = useState(15);
 
-  // Auto-Scroll State'leri
   const [isScrolling, setIsScrolling] = useState(false);
   const [scrollSpeed, setScrollSpeed] = useState(1);
   const scrollRef = useRef<ScrollView>(null);
@@ -56,19 +62,19 @@ export default function App() {
 
   const [isBeatActive, setIsBeatActive] = useState(false);
 
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
-  const [newArtist, setNewArtist] = useState('');
-  const [newOriginalKey, setNewOriginalKey] = useState('Am');
-  const [newBpm, setNewBpm] = useState('100');
-  const [newContent, setNewContent] = useState('');
+  const [isFormModalOpen, setIsFormModalOpen] = useState(false);
+  const [editingSongId, setEditingSongId] = useState<string | null>(null);
+  const [formTitle, setFormTitle] = useState('');
+  const [formArtist, setFormArtist] = useState('');
+  const [formOriginalKey, setFormOriginalKey] = useState('Am');
+  const [formBpm, setFormBpm] = useState('100');
+  const [formContent, setFormContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     fetchSongs();
   }, []);
 
-  // Kesin Çalışan Web & Mobil Doğrudan DOM Scroll Motoru
   useEffect(() => {
     let intervalId: any = null;
 
@@ -79,9 +85,7 @@ export default function App() {
 
         if (Platform.OS === 'web' && typeof document !== 'undefined') {
           const domEl = document.getElementById('stage-scroll-container');
-          if (domEl) {
-            domEl.scrollTop = currentScrollY.current;
-          }
+          if (domEl) domEl.scrollTop = currentScrollY.current;
         } else {
           scrollRef.current?.scrollTo({ y: currentScrollY.current, animated: false });
         }
@@ -138,42 +142,103 @@ export default function App() {
     setSelectedTone((prev) => transposeChord(prev, step));
   };
 
-  const handleSaveSong = async () => {
-    if (!newTitle.trim() || !newArtist.trim() || !newContent.trim()) {
+  const handleOpenAddModal = () => {
+    setEditingSongId(null);
+    setFormTitle('');
+    setFormArtist('');
+    setFormOriginalKey('Am');
+    setFormBpm('100');
+    setFormContent('');
+    setIsFormModalOpen(true);
+  };
+
+  const handleOpenEditModal = (songItem: Song) => {
+    setEditingSongId(songItem.id);
+    setFormTitle(songItem.title);
+    setFormArtist(songItem.artist);
+    setFormOriginalKey(songItem.original_key);
+    setFormBpm(songItem.bpm ? songItem.bpm.toString() : '100');
+    setFormContent(songItem.content);
+    setIsFormModalOpen(true);
+  };
+
+  const handleSaveOrUpdateSong = async () => {
+    if (!formTitle.trim() || !formArtist.trim() || !formContent.trim()) {
       alert('Lütfen şarkı adı, sanatçı ve söz/akor alanlarını doldurun.');
       return;
     }
 
     try {
       setIsSaving(true);
-      const { data, error } = await supabase
+
+      const songPayload = {
+        title: formTitle.trim(),
+        artist: formArtist.trim(),
+        original_key: formOriginalKey,
+        bpm: parseInt(formBpm, 10) || 100,
+        content: formContent,
+      };
+
+      if (editingSongId) {
+        const { data, error } = await supabase
+          .from('morfeus_songs')
+          .update(songPayload)
+          .eq('id', editingSongId)
+          .select();
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          const updatedSong = data[0];
+          setSongs(songs.map((s) => (s.id === updatedSong.id ? updatedSong : s)));
+          if (selectedSong?.id === updatedSong.id) {
+            setSelectedSong(updatedSong);
+            setSelectedTone(updatedSong.original_key);
+            setTransposeValue(0);
+          }
+        }
+      } else {
+        const { data, error } = await supabase
+          .from('morfeus_songs')
+          .insert([songPayload])
+          .select();
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          setSongs([data[0], ...songs]);
+          handleSelectSong(data[0]);
+        }
+      }
+
+      setIsFormModalOpen(false);
+    } catch (err) {
+      console.error('Kayıt hatası:', err);
+      alert('İşlem sırasında bir hata oluştu.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteSong = async (songId: string) => {
+    const confirmed = window.confirm('Bu şarkıyı repertuvardan tamamen silmek istediğinize emin misiniz?');
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase
         .from('morfeus_songs')
-        .insert([
-          {
-            title: newTitle.trim(),
-            artist: newArtist.trim(),
-            original_key: newOriginalKey,
-            bpm: parseInt(newBpm, 10) || 100,
-            content: newContent,
-          },
-        ])
-        .select();
+        .delete()
+        .eq('id', songId);
 
       if (error) throw error;
 
-      if (data && data.length > 0) {
-        setSongs([data[0], ...songs]);
-        handleSelectSong(data[0]);
-        setIsAddModalOpen(false);
-        setNewTitle('');
-        setNewArtist('');
-        setNewContent('');
+      setSongs(songs.filter((s) => s.id !== songId));
+      if (selectedSong?.id === songId) {
+        setSelectedSong(null);
       }
     } catch (err) {
-      console.error('Kayıt hatası:', err);
-      alert('Şarkı kaydedilirken bir hata oluştu.');
-    } finally {
-      setIsSaving(false);
+      console.error('Silme hatası:', err);
+      alert('Şarkı silinirken bir hata oluştu.');
     }
   };
 
@@ -182,7 +247,13 @@ export default function App() {
     return lines.map((line, lineIdx) => {
       if (isChordLine(line)) {
         return (
-          <Text key={lineIdx} style={[styles.chordOnlyLine, { fontSize, lineHeight: fontSize * 1.6 }]}>
+          <Text
+            key={lineIdx}
+            style={[
+              styles.chordOnlyLine,
+              { fontSize, lineHeight: fontSize * 1.5 },
+            ]}
+          >
             {line}
           </Text>
         );
@@ -190,7 +261,13 @@ export default function App() {
 
       const parts = line.split(new RegExp(`(\\[${CHORD_REGEX_STR}\\])`, 'g'));
       return (
-        <Text key={lineIdx} style={[styles.contentLine, { fontSize, lineHeight: fontSize * 1.8 }]}>
+        <Text
+          key={lineIdx}
+          style={[
+            styles.contentLine,
+            { fontSize, lineHeight: fontSize * 1.6 },
+          ]}
+        >
           {parts.map((part, partIdx) => {
             const isBracketChord = part.startsWith('[') && part.endsWith(']');
             if (isBracketChord) {
@@ -240,19 +317,33 @@ export default function App() {
                   <Text style={styles.artist}>{selectedSong.artist}</Text>
                 </View>
 
-                {selectedSong.bpm ? (
-                  <View style={styles.bpmContainer}>
-                    <View
-                      style={[
-                        styles.bpmDot,
-                        isBeatActive && styles.bpmDotActive,
-                      ]}
-                    />
-                    <Text style={styles.bpmText}>{selectedSong.bpm} BPM</Text>
-                  </View>
-                ) : (
-                  <Music2 color="#818CF8" size={24} />
-                )}
+                <View style={styles.headerActions}>
+                  {selectedSong.bpm ? (
+                    <View style={styles.bpmContainer}>
+                      <View
+                        style={[
+                          styles.bpmDot,
+                          isBeatActive && styles.bpmDotActive,
+                        ]}
+                      />
+                      <Text style={styles.bpmText}>{selectedSong.bpm} BPM</Text>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={styles.iconActionBtn}
+                    onPress={() => handleOpenEditModal(selectedSong)}
+                  >
+                    <Edit3 color="#94A3B8" size={18} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.iconActionBtn}
+                    onPress={() => handleDeleteSong(selectedSong.id)}
+                  >
+                    <Trash2 color="#EF4444" size={18} />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={styles.controlBar}>
@@ -271,13 +362,13 @@ export default function App() {
                 <View style={styles.fontSizeControls}>
                   <TouchableOpacity
                     style={styles.smallIconBtn}
-                    onPress={() => setFontSize((prev) => Math.max(12, prev - 2))}
+                    onPress={() => setFontSize((prev) => Math.max(11, prev - 1))}
                   >
                     <Text style={styles.fontBtnText}>A-</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.smallIconBtn}
-                    onPress={() => setFontSize((prev) => Math.min(28, prev + 2))}
+                    onPress={() => setFontSize((prev) => Math.min(26, prev + 1))}
                   >
                     <Text style={styles.fontBtnText}>A+</Text>
                   </TouchableOpacity>
@@ -306,7 +397,6 @@ export default function App() {
                 </View>
               </View>
 
-              {/* SAHNE ŞARKI ALANI (DOM ID Entegreli) */}
               <ScrollView
                 ref={scrollRef}
                 nativeID="stage-scroll-container"
@@ -321,7 +411,11 @@ export default function App() {
                 }}
                 scrollEventThrottle={16}
               >
-                {renderFormattedContent(transposeContent(selectedSong.content, transposeValue))}
+                <ScrollView horizontal={true} showsHorizontalScrollIndicator={false}>
+                  <View style={styles.lyricsWrapper}>
+                    {renderFormattedContent(transposeContent(selectedSong.content, transposeValue))}
+                  </View>
+                </ScrollView>
               </ScrollView>
 
               <View style={styles.floatingActionBar}>
@@ -387,7 +481,7 @@ export default function App() {
                 </View>
                 <TouchableOpacity
                   style={styles.addBtn}
-                  onPress={() => setIsAddModalOpen(true)}
+                  onPress={handleOpenAddModal}
                 >
                   <PlusCircle color="#FFFFFF" size={20} />
                   <Text style={styles.addBtnText}>Şarkı Ekle</Text>
@@ -421,8 +515,31 @@ export default function App() {
                         <Text style={styles.songListTitle}>{item.title}</Text>
                         <Text style={styles.songListArtist}>{item.artist}</Text>
                       </View>
-                      <View style={styles.keyBadge}>
-                        <Text style={styles.keyBadgeText}>{item.original_key}</Text>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={styles.keyBadge}>
+                          <Text style={styles.keyBadgeText}>{item.original_key}</Text>
+                        </View>
+
+                        <TouchableOpacity
+                          style={styles.listRowIconBtn}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            handleOpenEditModal(item);
+                          }}
+                        >
+                          <Edit3 color="#94A3B8" size={16} />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.listRowIconBtn}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSong(item.id);
+                          }}
+                        >
+                          <Trash2 color="#EF4444" size={16} />
+                        </TouchableOpacity>
                       </View>
                     </TouchableOpacity>
                   ))}
@@ -437,12 +554,14 @@ export default function App() {
         </View>
       </View>
 
-      <Modal visible={isAddModalOpen} animationType="slide" transparent={true}>
+      <Modal visible={isFormModalOpen} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.addModalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Yeni Şarkı Ekle</Text>
-              <TouchableOpacity onPress={() => setIsAddModalOpen(false)}>
+              <Text style={styles.modalTitle}>
+                {editingSongId ? 'Şarkıyı Düzenle' : 'Yeni Şarkı Ekle'}
+              </Text>
+              <TouchableOpacity onPress={() => setIsFormModalOpen(false)}>
                 <X color="#94A3B8" size={22} />
               </TouchableOpacity>
             </View>
@@ -451,24 +570,24 @@ export default function App() {
               style={styles.formInput}
               placeholder="Şarkı Adı"
               placeholderTextColor="#64748B"
-              value={newTitle}
-              onChangeText={setNewTitle}
+              value={formTitle}
+              onChangeText={setFormTitle}
             />
 
             <TextInput
               style={styles.formInput}
               placeholder="Sanatçı"
               placeholderTextColor="#64748B"
-              value={newArtist}
-              onChangeText={setNewArtist}
+              value={formArtist}
+              onChangeText={setFormArtist}
             />
 
             <View style={styles.formRow}>
               <Text style={styles.formLabel}>Ton:</Text>
               <TextInput
                 style={[styles.formInput, { width: 70, marginBottom: 0 }]}
-                value={newOriginalKey}
-                onChangeText={setNewOriginalKey}
+                value={formOriginalKey}
+                onChangeText={setFormOriginalKey}
                 placeholder="Am"
                 placeholderTextColor="#64748B"
               />
@@ -476,8 +595,8 @@ export default function App() {
               <Text style={[styles.formLabel, { marginLeft: 16 }]}>BPM:</Text>
               <TextInput
                 style={[styles.formInput, { width: 70, marginBottom: 0 }]}
-                value={newBpm}
-                onChangeText={setNewBpm}
+                value={formBpm}
+                onChangeText={setFormBpm}
                 placeholder="100"
                 keyboardType="numeric"
                 placeholderTextColor="#64748B"
@@ -488,18 +607,22 @@ export default function App() {
               style={[styles.formInput, styles.textArea]}
               placeholder="Akorlu şarkı sözlerini doğrudan buraya yapıştırın..."
               placeholderTextColor="#64748B"
-              value={newContent}
-              onChangeText={setNewContent}
+              value={formContent}
+              onChangeText={setFormContent}
               multiline
             />
 
             <TouchableOpacity
               style={[styles.saveBtn, isSaving && { opacity: 0.7 }]}
-              onPress={handleSaveSong}
+              onPress={handleSaveOrUpdateSong}
               disabled={isSaving}
             >
               <Text style={styles.saveBtnText}>
-                {isSaving ? 'Kaydediliyor...' : 'Repertuvara Kaydet'}
+                {isSaving
+                  ? 'Kaydediliyor...'
+                  : editingSongId
+                  ? 'Değişiklikleri Kaydet'
+                  : 'Repertuvara Kaydet'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -567,7 +690,7 @@ const styles = StyleSheet.create({
   contentCard: {
     flex: 1,
     width: '100%',
-    maxWidth: 720,
+    maxWidth: 780,
     backgroundColor: '#0F172A',
     borderLeftWidth: 1,
     borderRightWidth: 1,
@@ -658,6 +781,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 13,
   },
+  listRowIconBtn: {
+    padding: 6,
+    backgroundColor: '#1E293B',
+    borderRadius: 6,
+  },
   emptyText: {
     color: '#64748B',
     textAlign: 'center',
@@ -671,6 +799,16 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iconActionBtn: {
+    padding: 6,
+    backgroundColor: '#1E293B',
+    borderRadius: 6,
   },
   backBtn: {
     padding: 4,
@@ -786,22 +924,29 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: 400,
   },
-  contentLine: {
-    fontFamily: 'monospace',
-    letterSpacing: 0.5,
+  lyricsWrapper: {
+    minWidth: '100%',
   },
+  contentLine: {
+    fontFamily: STAGE_FONT_FAMILY,
+    letterSpacing: 0,
+    whiteSpace: 'pre',
+  } as any,
   chordOnlyLine: {
-    fontFamily: 'monospace',
-    letterSpacing: 0.5,
+    fontFamily: STAGE_FONT_FAMILY,
+    letterSpacing: 0,
     color: '#F59E0B',
     fontWeight: 'bold',
-  },
+    whiteSpace: 'pre',
+  } as any,
   chordText: {
     color: '#F59E0B',
     fontWeight: 'bold',
+    fontFamily: STAGE_FONT_FAMILY,
   },
   lyricsText: {
     color: '#E2E8F0',
+    fontFamily: STAGE_FONT_FAMILY,
   },
   floatingActionBar: {
     flexDirection: 'row',
@@ -856,7 +1001,6 @@ const styles = StyleSheet.create({
   resetScrollBtn: {
     padding: 8,
     backgroundColor: '#0F172A',
-    borderRadius: 8,
   },
   modalOverlay: {
     flex: 1,
@@ -880,7 +1024,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     width: '100%',
-    maxWidth: 540,
+    maxWidth: 600,
     borderWidth: 1,
     borderColor: '#334155',
   },
@@ -922,10 +1066,11 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   textArea: {
-    height: 140,
+    height: 180,
     textAlignVertical: 'top',
-    fontFamily: 'monospace',
-  },
+    fontFamily: STAGE_FONT_FAMILY,
+    whiteSpace: 'pre',
+  } as any,
   saveBtn: {
     backgroundColor: '#4F46E5',
     paddingVertical: 12,
