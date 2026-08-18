@@ -9,10 +9,11 @@ import {
   SafeAreaView,
   StatusBar,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { supabase } from './src/lib/supabase';
 import { ALL_TONES, transposeContent, transposeChord } from './src/utils/chordEngine';
-import { Plus, Minus, Music2, ChevronDown } from 'lucide-react-native';
+import { Plus, Minus, Music2, ChevronDown, Search, ArrowLeft, PlusCircle, X } from 'lucide-react-native';
 
 interface Song {
   id: string;
@@ -24,37 +25,52 @@ interface Song {
 }
 
 export default function App() {
-  const [song, setSong] = useState<Song | null>(null);
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [selectedSong, setSelectedSong] = useState<Song | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
-  
+
+  // Transpoze & Ton State'leri
   const [transposeValue, setTransposeValue] = useState(0);
   const [selectedTone, setSelectedTone] = useState<string>('');
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
 
+  // Yeni Şarkı Ekleme Modalı State'leri
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newArtist, setNewArtist] = useState('');
+  const [newOriginalKey, setNewOriginalKey] = useState('Am');
+  const [newContent, setNewContent] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
   useEffect(() => {
-    fetchSong();
+    fetchSongs();
   }, []);
 
-  const fetchSong = async () => {
+  const fetchSongs = async () => {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('morfeus_songs')
         .select('*')
-        .limit(1)
-        .single();
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
 
       if (data) {
-        setSong(data);
-        setSelectedTone(data.original_key);
+        setSongs(data);
       }
     } catch (err) {
-      console.error('Şarkı yüklenirken hata:', err);
+      console.error('Şarkılar yüklenirken hata:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelectSong = (songItem: Song) => {
+    setSelectedSong(songItem);
+    setSelectedTone(songItem.original_key);
+    setTransposeValue(0);
   };
 
   const handleTranspose = (step: number) => {
@@ -62,101 +78,244 @@ export default function App() {
     setSelectedTone((prev) => transposeChord(prev, step));
   };
 
-  const handleSelectTone = (tone: string) => {
-    setSelectedTone(tone);
-    setIsToneModalOpen(false);
+  const handleSaveSong = async () => {
+    if (!newTitle.trim() || !newArtist.trim() || !newContent.trim()) {
+      alert('Lütfen şarkı adı, sanatçı ve söz/akor alanlarını doldurun.');
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      const { data, error } = await supabase
+        .from('morfeus_songs')
+        .insert([
+          {
+            title: newTitle.trim(),
+            artist: newArtist.trim(),
+            original_key: newOriginalKey,
+            content: newContent,
+          },
+        ])
+        .select();
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        setSongs([data[0], ...songs]);
+        handleSelectSong(data[0]);
+        setIsAddModalOpen(false);
+        setNewTitle('');
+        setNewArtist('');
+        setNewContent('');
+      }
+    } catch (err) {
+      console.error('Kayıt hatası:', err);
+      alert('Şarkı kaydedilirken bir hata oluştu.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#6366F1" />
-        <Text style={styles.loadingText}>Şarkı Yükleniyor...</Text>
-      </View>
-    );
-  }
-
-  if (!song) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.errorText}>Şarkı bulunamadı. Supabase tablosunu kontrol edin.</Text>
-      </View>
-    );
-  }
-
-  const currentContent = transposeContent(song.content, transposeValue);
+  const filteredSongs = songs.filter(
+    (s) =>
+      s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      s.artist.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* Ekranı Merkezleyen Ana Konteyner */}
       <View style={styles.mainWrapper}>
         <View style={styles.contentCard}>
 
-          {/* Üst Bar: Başlık, Sanatçı & İkon */}
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.title}>{song.title}</Text>
-              <Text style={styles.artist}>{song.artist}</Text>
-            </View>
-            <Music2 color="#818CF8" size={26} />
-          </View>
-
-          {/* Kontrol Paneli: TON & Transpoze Butonları */}
-          <View style={styles.controlBar}>
-            <TouchableOpacity
-              style={styles.toneButton}
-              onPress={() => setIsToneModalOpen(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.toneLabel}>TON:</Text>
-              <Text style={styles.toneValue}>{selectedTone || song.original_key}</Text>
-              <ChevronDown color="#94A3B8" size={16} />
-            </TouchableOpacity>
-
-            <View style={styles.transposeControls}>
-              <TouchableOpacity
-                style={styles.circleBtn}
-                onPress={() => handleTranspose(-1)}
-              >
-                <Minus color="#FFFFFF" size={16} />
-              </TouchableOpacity>
-
-              <View style={styles.transposeBadge}>
-                <Text style={styles.transposeText}>
-                  {transposeValue > 0 ? `+${transposeValue}` : transposeValue}
-                </Text>
+          {/* EKRAN 1: SAHNE / ŞARKI DETAYI */}
+          {selectedSong ? (
+            <>
+              <View style={styles.header}>
+                <TouchableOpacity
+                  style={styles.backBtn}
+                  onPress={() => setSelectedSong(null)}
+                >
+                  <ArrowLeft color="#F8FAFC" size={22} />
+                </TouchableOpacity>
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {selectedSong.title}
+                  </Text>
+                  <Text style={styles.artist}>{selectedSong.artist}</Text>
+                </View>
+                <Music2 color="#818CF8" size={24} />
               </View>
 
-              <TouchableOpacity
-                style={styles.circleBtn}
-                onPress={() => handleTranspose(1)}
-              >
-                <Plus color="#FFFFFF" size={16} />
-              </TouchableOpacity>
-            </View>
-          </View>
+              <View style={styles.controlBar}>
+                <TouchableOpacity
+                  style={styles.toneButton}
+                  onPress={() => setIsToneModalOpen(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.toneLabel}>TON:</Text>
+                  <Text style={styles.toneValue}>
+                    {selectedTone || selectedSong.original_key}
+                  </Text>
+                  <ChevronDown color="#94A3B8" size={16} />
+                </TouchableOpacity>
 
-          {/* Şarkı Sözleri ve Akor Alanı */}
-          <ScrollView 
-            style={styles.scrollArea} 
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            <Text style={styles.contentText}>{currentContent}</Text>
-          </ScrollView>
+                <View style={styles.transposeControls}>
+                  <TouchableOpacity
+                    style={styles.circleBtn}
+                    onPress={() => handleTranspose(-1)}
+                  >
+                    <Minus color="#FFFFFF" size={16} />
+                  </TouchableOpacity>
+
+                  <View style={styles.transposeBadge}>
+                    <Text style={styles.transposeText}>
+                      {transposeValue > 0 ? `+${transposeValue}` : transposeValue}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.circleBtn}
+                    onPress={() => handleTranspose(1)}
+                  >
+                    <Plus color="#FFFFFF" size={16} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <ScrollView
+                style={styles.scrollArea}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <Text style={styles.contentText}>
+                  {transposeContent(selectedSong.content, transposeValue)}
+                </Text>
+              </ScrollView>
+            </>
+          ) : (
+            /* EKRAN 2: REPERTUAR & ŞARKI LİSTESİ */
+            <>
+              <View style={styles.listHeader}>
+                <View>
+                  <Text style={styles.mainTitle}>Morfeus Repertuvar</Text>
+                  <Text style={styles.subTitle}>{songs.length} Şarkı Kayıtlı</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.addBtn}
+                  onPress={() => setIsAddModalOpen(true)}
+                >
+                  <PlusCircle color="#FFFFFF" size={20} />
+                  <Text style={styles.addBtnText}>Şarkı Ekle</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.searchBar}>
+                <Search color="#64748B" size={18} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Şarkı veya sanatçı ara..."
+                  placeholderTextColor="#64748B"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                />
+              </View>
+
+              {loading ? (
+                <View style={styles.center}>
+                  <ActivityIndicator size="large" color="#6366F1" />
+                </View>
+              ) : (
+                <ScrollView style={styles.listArea}>
+                  {filteredSongs.map((item) => (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={styles.songListItem}
+                      onPress={() => handleSelectSong(item)}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.songListTitle}>{item.title}</Text>
+                        <Text style={styles.songListArtist}>{item.artist}</Text>
+                      </View>
+                      <View style={styles.keyBadge}>
+                        <Text style={styles.keyBadgeText}>{item.original_key}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                  {filteredSongs.length === 0 && (
+                    <Text style={styles.emptyText}>Aranan şarkı bulunamadı.</Text>
+                  )}
+                </ScrollView>
+              )}
+            </>
+          )}
 
         </View>
       </View>
 
-      {/* Alttan Açılan Ton Seçici Modal */}
-      <Modal
-        visible={isToneModalOpen}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setIsToneModalOpen(false)}
-      >
+      {/* YENİ ŞARKI EKLEME MODALI */}
+      <Modal visible={isAddModalOpen} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.addModalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Yeni Şarkı Ekle</Text>
+              <TouchableOpacity onPress={() => setIsAddModalOpen(false)}>
+                <X color="#94A3B8" size={22} />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.formInput}
+              placeholder="Şarkı Adı"
+              placeholderTextColor="#64748B"
+              value={newTitle}
+              onChangeText={setNewTitle}
+            />
+
+            <TextInput
+              style={styles.formInput}
+              placeholder="Sanatçı"
+              placeholderTextColor="#64748B"
+              value={newArtist}
+              onChangeText={setNewArtist}
+            />
+
+            <View style={styles.formRow}>
+              <Text style={styles.formLabel}>Orijinal Ton:</Text>
+              <TextInput
+                style={[styles.formInput, { width: 80, marginBottom: 0 }]}
+                value={newOriginalKey}
+                onChangeText={setNewOriginalKey}
+                placeholder="Am"
+                placeholderTextColor="#64748B"
+              />
+            </View>
+
+            <TextInput
+              style={[styles.formInput, styles.textArea]}
+              placeholder="Akorlu şarkı sözleri... [Am] [Dm] formatında veya düz metin."
+              placeholderTextColor="#64748B"
+              value={newContent}
+              onChangeText={setNewContent}
+              multiline
+            />
+
+            <TouchableOpacity
+              style={[styles.saveBtn, isSaving && { opacity: 0.7 }]}
+              onPress={handleSaveSong}
+              disabled={isSaving}
+            >
+              <Text style={styles.saveBtnText}>
+                {isSaving ? 'Kaydediliyor...' : 'Repertuvara Kaydet'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* TON SEÇİCİ MODAL */}
+      <Modal visible={isToneModalOpen} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
@@ -174,7 +333,10 @@ export default function App() {
                     styles.toneGridItem,
                     selectedTone === tone && styles.selectedToneGridItem,
                   ]}
-                  onPress={() => handleSelectTone(tone)}
+                  onPress={() => {
+                    setSelectedTone(tone);
+                    setIsToneModalOpen(false);
+                  }}
                 >
                   <Text
                     style={[
@@ -203,16 +365,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#090D16',
-  },
-  loadingText: {
-    color: '#94A3B8',
-    marginTop: 12,
-  },
-  errorText: {
-    color: '#EF4444',
-    textAlign: 'center',
-    paddingHorizontal: 20,
+    padding: 20,
   },
   mainWrapper: {
     flex: 1,
@@ -223,38 +376,130 @@ const styles = StyleSheet.create({
   contentCard: {
     flex: 1,
     width: '100%',
-    maxWidth: 720, // Tablet ve masaüstünde ortalanmış ideal sahne genişliği
+    maxWidth: 720,
     backgroundColor: '#0F172A',
     borderLeftWidth: 1,
     borderRightWidth: 1,
     borderColor: '#1E293B',
   },
-  header: {
+  listHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 20,
+    paddingTop: 24,
     paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
   },
-  title: {
+  mainTitle: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#F8FAFC',
   },
-  artist: {
-    fontSize: 14,
+  subTitle: {
+    fontSize: 13,
     color: '#94A3B8',
-    marginTop: 4,
+    marginTop: 2,
+  },
+  addBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#4F46E5',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    gap: 6,
+  },
+  addBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    marginHorizontal: 24,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 10,
+    marginBottom: 16,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 14,
+    outlineStyle: 'none',
+  } as any,
+  listArea: {
+    flex: 1,
+    paddingHorizontal: 24,
+  },
+  songListItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#161F30',
+    padding: 16,
+    borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  songListTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#F8FAFC',
+  },
+  songListArtist: {
+    fontSize: 13,
+    color: '#94A3B8',
+    marginTop: 3,
+  },
+  keyBadge: {
+    backgroundColor: '#334155',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  keyBadgeText: {
+    color: '#38BDF8',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+  emptyText: {
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 40,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  backBtn: {
+    padding: 4,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#F8FAFC',
+  },
+  artist: {
+    fontSize: 13,
+    color: '#94A3B8',
+    marginTop: 2,
   },
   controlBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingVertical: 14,
+    paddingVertical: 12,
     backgroundColor: '#161F30',
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
@@ -264,11 +509,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#1E293B',
     paddingVertical: 6,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#334155',
-    gap: 8,
+    gap: 6,
   },
   toneLabel: {
     fontSize: 12,
@@ -276,14 +521,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   toneValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#38BDF8',
   },
   transposeControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   circleBtn: {
     width: 32,
@@ -294,11 +539,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   transposeBadge: {
-    minWidth: 28,
+    minWidth: 26,
     alignItems: 'center',
   },
   transposeText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#F8FAFC',
   },
@@ -311,10 +556,9 @@ const styles = StyleSheet.create({
   },
   contentText: {
     fontFamily: 'monospace',
-    fontSize: 16,
-    lineHeight: 30,
+    fontSize: 15,
+    lineHeight: 28,
     color: '#E2E8F0',
-    letterSpacing: 0.5,
   },
   modalOverlay: {
     flex: 1,
@@ -333,6 +577,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  addModalContent: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 20,
+    width: '100%',
+    maxWidth: 540,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -348,10 +601,49 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 14,
   },
+  formInput: {
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#F8FAFC',
+    fontSize: 14,
+    marginBottom: 12,
+    outlineStyle: 'none',
+  } as any,
+  formRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  formLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+  },
+  textArea: {
+    height: 140,
+    textAlignVertical: 'top',
+    fontFamily: 'monospace',
+  },
+  saveBtn: {
+    backgroundColor: '#4F46E5',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  saveBtnText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 15,
+  },
   tonesGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
     justifyContent: 'center',
   },
   toneGridItem: {
@@ -368,7 +660,7 @@ const styles = StyleSheet.create({
     borderColor: '#6366F1',
   },
   toneGridText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#F8FAFC',
   },
