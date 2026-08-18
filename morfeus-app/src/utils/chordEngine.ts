@@ -6,6 +6,8 @@ export const ALL_TONES = [
   'Cm', 'C#m', 'Dm', 'D#m', 'Em', 'Fm', 'F#m', 'Gm', 'G#m', 'Am', 'A#m', 'Bm'
 ];
 
+export const CHORD_REGEX_STR = '[A-G][#b]?(?:m|maj|min|dim|aug|sus[24]?|[0-9]+)*(?:\\/[A-G][#b]?)?';
+
 export function transposeChord(chord: string, semitones: number): string {
   if (semitones === 0) return chord;
 
@@ -28,8 +30,38 @@ export function transposeChord(chord: string, semitones: number): string {
   return transposedRoot + suffix;
 }
 
+// Bir satırın sırf akorlardan oluşup oluşmadığını test eder
+export function isChordLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  
+  // Boşluklara göre kelimelere böl
+  const tokens = trimmed.split(/\s+/);
+  const chordRegex = new RegExp(`^${CHORD_REGEX_STR}$`);
+  
+  // Kelimelerin en az %70'i akor ise o satır akor satırıdır
+  const chordMatches = tokens.filter(t => chordRegex.test(t));
+  return chordMatches.length > 0 && (chordMatches.length / tokens.length) >= 0.7;
+}
+
 export function transposeContent(content: string, semitones: number): string {
   if (semitones === 0) return content;
-  const chordRegex = /\[([A-G][#b]?(?:m|maj|min|dim|aug|sus[24]?|[0-9]+)*(?:\/[A-G][#b]?)?)\]/g;
-  return content.replace(chordRegex, (_, chord) => `[${transposeChord(chord, semitones)}]`);
+
+  // 1. Köşeli parantezli akorları transpoze et: [Am] -> [Bm]
+  let result = content.replace(
+    new RegExp(`\\[(${CHORD_REGEX_STR})\\]`, 'g'),
+    (_, chord) => `[${transposeChord(chord, semitones)}]`
+  );
+
+  // 2. Satır satır inceleyip düz akor satırlarını transpoze et
+  const lines = result.split('\n');
+  const transposedLines = lines.map(line => {
+    if (isChordLine(line)) {
+      const singleChordRegex = new RegExp(`\\b(${CHORD_REGEX_STR})\\b`, 'g');
+      return line.replace(singleChordRegex, (ch) => transposeChord(ch, semitones));
+    }
+    return line;
+  });
+
+  return transposedLines.join('\n');
 }

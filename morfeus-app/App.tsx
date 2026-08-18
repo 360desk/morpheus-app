@@ -12,8 +12,17 @@ import {
   TextInput,
 } from 'react-native';
 import { supabase } from './src/lib/supabase';
-import { ALL_TONES, transposeContent, transposeChord } from './src/utils/chordEngine';
-import { Plus, Minus, Music2, ChevronDown, Search, ArrowLeft, PlusCircle, X } from 'lucide-react-native';
+import { ALL_TONES, transposeContent, transposeChord, isChordLine, CHORD_REGEX_STR } from './src/utils/chordEngine';
+import {
+  Plus,
+  Minus,
+  Music2,
+  ChevronDown,
+  Search,
+  ArrowLeft,
+  PlusCircle,
+  X,
+} from 'lucide-react-native';
 
 interface Song {
   id: string;
@@ -30,12 +39,11 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
-  // Transpoze & Ton State'leri
   const [transposeValue, setTransposeValue] = useState(0);
   const [selectedTone, setSelectedTone] = useState<string>('');
   const [isToneModalOpen, setIsToneModalOpen] = useState(false);
+  const [fontSize, setFontSize] = useState(16);
 
-  // Yeni Şarkı Ekleme Modalı State'leri
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newArtist, setNewArtist] = useState('');
@@ -56,10 +64,7 @@ export default function App() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-
-      if (data) {
-        setSongs(data);
-      }
+      if (data) setSongs(data);
     } catch (err) {
       console.error('Şarkılar yüklenirken hata:', err);
     } finally {
@@ -116,6 +121,43 @@ export default function App() {
     }
   };
 
+  // Hem düz akor satırlarını hem de [Am] formatını otomatik tanıyan akıllı render
+  const renderFormattedContent = (content: string) => {
+    const lines = content.split('\n');
+    return lines.map((line, lineIdx) => {
+      // 1. Durum: Satır komple akor satırıysa (Düz yapıştırılan şarkılar)
+      if (isChordLine(line)) {
+        return (
+          <Text key={lineIdx} style={[styles.chordOnlyLine, { fontSize, lineHeight: fontSize * 1.6 }]}>
+            {line}
+          </Text>
+        );
+      }
+
+      // 2. Durum: Satır içinde [Am] şeklinde gömülü akorlar varsa
+      const parts = line.split(new RegExp(`(\\[${CHORD_REGEX_STR}\\])`, 'g'));
+      return (
+        <Text key={lineIdx} style={[styles.contentLine, { fontSize, lineHeight: fontSize * 1.8 }]}>
+          {parts.map((part, partIdx) => {
+            const isBracketChord = part.startsWith('[') && part.endsWith(']');
+            if (isBracketChord) {
+              return (
+                <Text key={partIdx} style={styles.chordText}>
+                  {part.slice(1, -1)}
+                </Text>
+              );
+            }
+            return (
+              <Text key={partIdx} style={styles.lyricsText}>
+                {part}
+              </Text>
+            );
+          })}
+        </Text>
+      );
+    });
+  };
+
   const filteredSongs = songs.filter(
     (s) =>
       s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -129,7 +171,6 @@ export default function App() {
       <View style={styles.mainWrapper}>
         <View style={styles.contentCard}>
 
-          {/* EKRAN 1: SAHNE / ŞARKI DETAYI */}
           {selectedSong ? (
             <>
               <View style={styles.header}>
@@ -158,8 +199,23 @@ export default function App() {
                   <Text style={styles.toneValue}>
                     {selectedTone || selectedSong.original_key}
                   </Text>
-                  <ChevronDown color="#94A3B8" size={16} />
+                  <ChevronDown color="#94A3B8" size={14} />
                 </TouchableOpacity>
+
+                <View style={styles.fontSizeControls}>
+                  <TouchableOpacity
+                    style={styles.smallIconBtn}
+                    onPress={() => setFontSize((prev) => Math.max(12, prev - 2))}
+                  >
+                    <Text style={styles.fontBtnText}>A-</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.smallIconBtn}
+                    onPress={() => setFontSize((prev) => Math.min(28, prev + 2))}
+                  >
+                    <Text style={styles.fontBtnText}>A+</Text>
+                  </TouchableOpacity>
+                </View>
 
                 <View style={styles.transposeControls}>
                   <TouchableOpacity
@@ -189,13 +245,10 @@ export default function App() {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
               >
-                <Text style={styles.contentText}>
-                  {transposeContent(selectedSong.content, transposeValue)}
-                </Text>
+                {renderFormattedContent(transposeContent(selectedSong.content, transposeValue))}
               </ScrollView>
             </>
           ) : (
-            /* EKRAN 2: REPERTUAR & ŞARKI LİSTESİ */
             <>
               <View style={styles.listHeader}>
                 <View>
@@ -254,7 +307,6 @@ export default function App() {
         </View>
       </View>
 
-      {/* YENİ ŞARKI EKLEME MODALI */}
       <Modal visible={isAddModalOpen} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.addModalContent}>
@@ -294,7 +346,7 @@ export default function App() {
 
             <TextInput
               style={[styles.formInput, styles.textArea]}
-              placeholder="Akorlu şarkı sözleri... [Am] [Dm] formatında veya düz metin."
+              placeholder="Akorlu şarkı sözlerini kopyalayıp buraya doğrudan yapıştırın..."
               placeholderTextColor="#64748B"
               value={newContent}
               onChangeText={setNewContent}
@@ -314,7 +366,6 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* TON SEÇİCİ MODAL */}
       <Modal visible={isToneModalOpen} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -525,6 +576,23 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#38BDF8',
   },
+  fontSizeControls: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  smallIconBtn: {
+    backgroundColor: '#1E293B',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  fontBtnText: {
+    color: '#94A3B8',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
   transposeControls: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -554,10 +622,21 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: 60,
   },
-  contentText: {
+  contentLine: {
     fontFamily: 'monospace',
-    fontSize: 15,
-    lineHeight: 28,
+    letterSpacing: 0.5,
+  },
+  chordOnlyLine: {
+    fontFamily: 'monospace',
+    letterSpacing: 0.5,
+    color: '#F59E0B',
+    fontWeight: 'bold',
+  },
+  chordText: {
+    color: '#F59E0B',
+    fontWeight: 'bold',
+  },
+  lyricsText: {
     color: '#E2E8F0',
   },
   modalOverlay: {
